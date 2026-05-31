@@ -12,38 +12,58 @@ def get_top20_futures():
 
     url = f"{BASE_URL}/fapi/v1/ticker/24hr"
 
-    data = requests.get(
-        url,
-        timeout=15
-    ).json()
+    try:
 
-    df = pd.DataFrame(data)
+        response = requests.get(
+            url,
+            timeout=15,
+            headers={
+                "User-Agent": "Mozilla/5.0"
+            }
+        )
 
-    df = df[
-        df["symbol"].str.endswith("USDT")
-    ]
+        data = response.json()
 
-    blacklist = [
-        "USDCUSDT",
-        "BUSDUSDT",
-        "TUSDUSDT"
-    ]
+        # Binance kadang mengembalikan dict error
+        if not isinstance(data, list):
 
-    df = df[
-        ~df["symbol"].isin(blacklist)
-    ]
+            print("BINANCE RESPONSE:", data)
 
-    df["quoteVolume"] = pd.to_numeric(
-        df["quoteVolume"],
-        errors="coerce"
-    )
+            return pd.DataFrame()
 
-    df = df.sort_values(
-        "quoteVolume",
-        ascending=False
-    )
+        df = pd.DataFrame(data)
 
-    return df.head(20)
+        df = df[
+            df["symbol"].str.endswith("USDT")
+        ]
+
+        blacklist = [
+            "USDCUSDT",
+            "BUSDUSDT",
+            "TUSDUSDT"
+        ]
+
+        df = df[
+            ~df["symbol"].isin(blacklist)
+        ]
+
+        df["quoteVolume"] = pd.to_numeric(
+            df["quoteVolume"],
+            errors="coerce"
+        )
+
+        df = df.sort_values(
+            "quoteVolume",
+            ascending=False
+        )
+
+        return df.head(20)
+
+    except Exception as e:
+
+        print("TOP20 ERROR:", e)
+
+        return pd.DataFrame()
 
 
 # =====================================================

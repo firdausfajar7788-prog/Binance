@@ -81,6 +81,17 @@ with st.spinner("Scanning Binance Futures..."):
 
     market = get_top20_futures()
 
+st.write("DEBUG MARKET")
+st.write(market)
+
+if market.empty:
+    st.error("Market kosong")
+    st.stop()
+
+if "symbol" not in market.columns:
+    st.error(f"Kolom symbol tidak ada. Kolom tersedia: {list(market.columns)}")
+    st.stop()
+
 
 signals = []
 

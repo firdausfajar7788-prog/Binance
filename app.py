@@ -80,7 +80,7 @@ st.caption("Top 20 Futures Volume • 4H AI Signal")
 with st.spinner("Scanning Binance Futures..."):
 
     market = get_top20_futures()
-    if market.empty:
+if market.empty:
 
     st.error(
         "❌ Gagal mengambil data Binance Futures"

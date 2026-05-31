@@ -6,16 +6,17 @@ from plotly.subplots import make_subplots
 from streamlit_autorefresh import st_autorefresh
 
 from binance_core import (
-    get_top20_futures,
+    get_top20_coins,
     get_klines,
-    ai_score
+    ai_score,
+    ema
 )
 
 # =====================================================
 # CONFIG
 # =====================================================
 st.set_page_config(
-    page_title="🚀 Binance AI Scanner",
+    page_title="🚀 AI Crypto Scanner",
     layout="wide"
 )
 
@@ -33,36 +34,29 @@ st_autorefresh(
 st.markdown("""
 <style>
 
-.main {
-    background:#050816;
-}
-
 .stApp{
     background:#050816;
 }
 
-.buy-card{
+.buy{
     background:#0f172a;
     border-left:6px solid #00ff88;
     padding:15px;
     border-radius:15px;
-    margin-bottom:10px;
 }
 
-.wait-card{
+.wait{
     background:#0f172a;
     border-left:6px solid orange;
     padding:15px;
     border-radius:15px;
-    margin-bottom:10px;
 }
 
-.sell-card{
+.sell{
     background:#0f172a;
     border-left:6px solid red;
     padding:15px;
     border-radius:15px;
-    margin-bottom:10px;
 }
 
 </style>
@@ -71,36 +65,25 @@ st.markdown("""
 # =====================================================
 # HEADER
 # =====================================================
-st.title("🚀 Binance Futures AI Scanner")
-st.caption("Top 20 Futures Volume • 4H AI Signal")
+st.title("🚀 Binance Spot AI Scanner")
+st.caption("Top 20 Volume • 4H Trading Signal")
 
 # =====================================================
 # LOAD MARKET
 # =====================================================
-with st.spinner("Scanning Binance Futures..."):
+with st.spinner("Scanning Market..."):
 
-    market = get_top20_futures()
-
-st.write("DEBUG MARKET")
-st.write(market)
+    market = get_top20_coins()
 
 if market.empty:
 
-    st.error(
-        "❌ Binance tidak mengembalikan data futures"
-    )
+    st.error("❌ Binance Spot tidak mengembalikan data")
 
     st.stop()
 
-if "symbol" not in market.columns:
-
-    st.error(
-        f"❌ Kolom symbol tidak ditemukan: {list(market.columns)}"
-    )
-
-    st.stop()
-
-
+# =====================================================
+# SCAN
+# =====================================================
 signals = []
 
 for symbol in market["symbol"].head(20):
@@ -119,34 +102,37 @@ for symbol in market["symbol"].head(20):
 
             signals.append({
 
-                "symbol":symbol,
+                "symbol": symbol,
 
                 **result
             })
 
-    except:
+    except Exception as e:
+
         pass
+
+if len(signals) == 0:
+
+    st.warning("Tidak ada signal ditemukan")
+
+    st.stop()
 
 # =====================================================
 # SORT
 # =====================================================
 signals = sorted(
     signals,
-    key=lambda x:x["score"],
+    key=lambda x: x["score"],
     reverse=True
 )
 
 # =====================================================
 # MARKET MOOD
 # =====================================================
-avg_score = 0
-
-if len(signals) > 0:
-
-    avg_score = sum(
-        x["score"]
-        for x in signals
-    ) / len(signals)
+avg_score = sum(
+    x["score"]
+    for x in signals
+) / len(signals)
 
 if avg_score >= 75:
 
@@ -160,138 +146,128 @@ else:
 
     mood = "🔴 MARKET BEARISH"
 
-st.success(
-    f"{mood} | Avg Score : {avg_score:.1f}"
+col1,col2,col3 = st.columns(3)
+
+col1.metric(
+    "Market Mood",
+    mood
+)
+
+col2.metric(
+    "Scanned Coins",
+    len(signals)
+)
+
+col3.metric(
+    "Average Score",
+    f"{avg_score:.1f}"
 )
 
 # =====================================================
 # TABS
 # =====================================================
 tab1,tab2,tab3 = st.tabs([
-
     "🔥 Opportunities",
-
     "📊 Scanner",
-
     "📈 Chart"
 ])
 
 # =====================================================
-# TAB 1
+# OPPORTUNITY
 # =====================================================
 with tab1:
 
-    st.subheader("Top Opportunities")
+    st.subheader("Top Opportunity Today")
 
     for item in signals[:5]:
 
-        if item["signal"] == "STRONG BUY":
+        if item["signal"] in ["BUY","STRONG BUY"]:
 
-            card = "buy-card"
-
-        elif item["signal"] == "BUY":
-
-            card = "buy-card"
+            css = "buy"
 
         elif item["signal"] == "WAIT":
 
-            card = "wait-card"
+            css = "wait"
 
         else:
 
-            card = "sell-card"
+            css = "sell"
 
         st.markdown(
-
             f"""
-            <div class="{card}">
-
+            <div class="{css}">
             <h3>{item['symbol']}</h3>
-
             <h2>{item['signal']}</h2>
 
-            <b>Score :</b> {item['score']}
+            Score : {item['score']}<br>
+            RSI : {item['rsi']}<br><br>
 
-            <br>
-
-            <b>RSI :</b> {item['rsi']}
-
-            <br>
-
-            <b>Entry :</b>
-
-            {item['entry_low']:.4f}
+            Entry :
+            {item['entry_low']:.6f}
             -
-            {item['entry_high']:.4f}
+            {item['entry_high']:.6f}
+
+            <br><br>
+
+            TP :
+            {item['tp']:.6f}
 
             <br>
 
-            <b>TP :</b>
-            {item['tp']:.4f}
-
-            <br>
-
-            <b>SL :</b>
-            {item['sl']:.4f}
+            SL :
+            {item['sl']:.6f}
 
             <br><br>
 
             {' | '.join(item['reason'])}
 
             </div>
-            """,
 
+            <br>
+            """,
             unsafe_allow_html=True
         )
 
 # =====================================================
-# TAB 2
+# SCANNER
 # =====================================================
 with tab2:
 
-    st.subheader("Scanner")
-
-    table = []
+    scanner = []
 
     for item in signals:
 
-        table.append({
+        scanner.append({
 
-            "Symbol":item["symbol"],
+            "Symbol": item["symbol"],
 
-            "Score":item["score"],
+            "Signal": item["signal"],
 
-            "Signal":item["signal"],
+            "Score": item["score"],
 
-            "RSI":item["rsi"],
+            "RSI": item["rsi"],
 
-            "Price":round(
+            "Price": round(
                 item["price"],
-                4
+                6
             )
         })
 
-    df_table = pd.DataFrame(table)
-
     st.dataframe(
-        df_table,
-        use_container_width=True,
-        height=600
+        pd.DataFrame(scanner),
+        use_container_width=True
     )
 
 # =====================================================
-# TAB 3
+# CHART
 # =====================================================
 with tab3:
 
-    symbols = [
-        x["symbol"]
-        for x in signals[:20]
-    ]
-
     selected = st.selectbox(
-        "Select Symbol",
-        symbols
+
+        "Select Coin",
+
+        [x["symbol"] for x in signals]
     )
 
     df = get_klines(
@@ -300,16 +276,14 @@ with tab3:
         300
     )
 
-    df["EMA20"] = (
-        df["Close"]
-        .ewm(span=20)
-        .mean()
+    df["EMA20"] = ema(
+        df["Close"],
+        20
     )
 
-    df["EMA50"] = (
-        df["Close"]
-        .ewm(span=50)
-        .mean()
+    df["EMA50"] = ema(
+        df["Close"],
+        50
     )
 
     support = (
@@ -336,9 +310,9 @@ with tab3:
         row_heights=[0.8,0.2]
     )
 
-    # ==================================
+    # =================================
     # CANDLE
-    # ==================================
+    # =================================
     fig.add_trace(
 
         go.Candlestick(
@@ -360,9 +334,9 @@ with tab3:
         col=1
     )
 
-    # ==================================
+    # =================================
     # EMA20
-    # ==================================
+    # =================================
     fig.add_trace(
 
         go.Scatter(
@@ -371,21 +345,21 @@ with tab3:
 
             y=df["EMA20"],
 
+            name="EMA20",
+
             line=dict(
                 color="cyan",
                 width=2
-            ),
-
-            name="EMA20"
+            )
         ),
 
         row=1,
         col=1
     )
 
-    # ==================================
+    # =================================
     # EMA50
-    # ==================================
+    # =================================
     fig.add_trace(
 
         go.Scatter(
@@ -394,45 +368,45 @@ with tab3:
 
             y=df["EMA50"],
 
+            name="EMA50",
+
             line=dict(
                 color="orange",
                 width=2
-            ),
-
-            name="EMA50"
+            )
         ),
 
         row=1,
         col=1
     )
 
-    # ==================================
+    # =================================
     # SUPPORT
-    # ==================================
+    # =================================
     fig.add_hline(
 
         y=support,
 
-        line_color="green",
+        line_dash="dash",
 
-        line_dash="dash"
+        line_color="green"
     )
 
-    # ==================================
+    # =================================
     # RESISTANCE
-    # ==================================
+    # =================================
     fig.add_hline(
 
         y=resistance,
 
-        line_color="red",
+        line_dash="dash",
 
-        line_dash="dash"
+        line_color="red"
     )
 
-    # ==================================
-    # ZONE
-    # ==================================
+    # =================================
+    # SUPPORT ZONE
+    # =================================
     fig.add_hrect(
 
         y0=support,
@@ -445,6 +419,9 @@ with tab3:
         line_width=0
     )
 
+    # =================================
+    # RESISTANCE ZONE
+    # =================================
     fig.add_hrect(
 
         y0=resistance*0.99,
@@ -457,14 +434,14 @@ with tab3:
         line_width=0
     )
 
-    # ==================================
+    # =================================
     # VOLUME
-    # ==================================
+    # =================================
     colors = [
 
         "#00ff88"
 
-        if c>=o
+        if c >= o
 
         else "#ff3b5c"
 
@@ -513,9 +490,6 @@ with tab3:
         use_container_width=True
     )
 
-# =====================================================
-# FOOTER
-# =====================================================
 st.caption(
-    "🚀 Binance Futures AI Scanner"
+    "🚀 AI Scanner Powered by Binance Spot"
 )

@@ -1,17 +1,40 @@
 import streamlit as st
 import requests
 import pandas as pd
+from streamlit_autorefresh import st_autorefresh
 
+# =====================================
+# CONFIG
+# =====================================
 st.set_page_config(
-    page_title="AI Daily Scanner",
+    page_title="AI Daily Crypto Scanner",
     layout="wide"
 )
 
-st.title("🚀 AI Daily Crypto Scanner")
+st_autorefresh(
+    interval=300000,
+    key="refresh"
+)
 
-# ====================================
-# GET TOP 100 COINS
-# ====================================
+st.title("🚀 AI Daily Crypto Scanner")
+st.caption("Powered by CoinGecko")
+
+# =====================================
+# SIDEBAR
+# =====================================
+currency = st.sidebar.selectbox(
+    "Currency",
+    ["USD", "IDR"]
+)
+
+# =====================================
+# KURS
+# =====================================
+usd_to_idr = 16500
+
+# =====================================
+# LOAD DATA
+# =====================================
 url = "https://api.coingecko.com/api/v3/coins/markets"
 
 params = {
@@ -23,19 +46,17 @@ params = {
     "price_change_percentage": "24h"
 }
 
-response = requests.get(
+coins = requests.get(
     url,
     params=params,
     timeout=20
-)
-
-coins = response.json()
+).json()
 
 results = []
 
-# ====================================
-# SIMPLE AI SCORE
-# ====================================
+# =====================================
+# AI SCORE
+# =====================================
 for coin in coins:
 
     try:
@@ -81,12 +102,17 @@ for coin in coins:
         else:
             signal = "🔴 AVOID"
 
+        price = coin["current_price"]
+
+        if currency == "IDR":
+            price *= usd_to_idr
+
         results.append({
 
             "Coin": coin["name"],
             "Symbol": coin["symbol"].upper(),
-            "Price": coin["current_price"],
-            "24H %": round(change,2),
+            "Price": round(price, 4),
+            "24H %": round(change, 2),
             "Rank": marketcap,
             "Score": score,
             "Signal": signal
@@ -103,19 +129,100 @@ df = df.sort_values(
     ascending=False
 )
 
-# ====================================
-# TOP SIGNAL
-# ====================================
-st.subheader("🔥 Top Opportunity Today")
+# =====================================
+# MARKET MOOD
+# =====================================
+avg_score = df["Score"].mean()
+
+if avg_score >= 70:
+    mood = "🟢 BULLISH"
+
+elif avg_score >= 50:
+    mood = "🟡 NEUTRAL"
+
+else:
+    mood = "🔴 BEARISH"
+
+# =====================================
+# METRICS
+# =====================================
+c1,c2,c3 = st.columns(3)
+
+c1.metric(
+    "Market Mood",
+    mood
+)
+
+c2.metric(
+    "Coins Scanned",
+    len(df)
+)
+
+c3.metric(
+    "Average Score",
+    round(avg_score,1)
+)
+
+# =====================================
+# TOP OPPORTUNITY
+# =====================================
+top = df.iloc[0]
+
+st.success(
+f"""
+🔥 TOP OPPORTUNITY
+
+Coin : {top['Coin']}
+Signal : {top['Signal']}
+Score : {top['Score']}
+"""
+)
+
+# =====================================
+# BREAKOUT WATCHLIST
+# =====================================
+st.subheader("🚀 Breakout Watchlist")
+
+breakout = df[
+    df["24H %"] > 5
+]
 
 st.dataframe(
-    df.head(10),
+    breakout.head(10),
     use_container_width=True
 )
 
-# ====================================
+# =====================================
+# STRONG BUY
+# =====================================
+st.subheader("💎 Strong Buy")
+
+strong = df[
+    df["Signal"] == "🔥 STRONG BUY"
+]
+
+st.dataframe(
+    strong,
+    use_container_width=True
+)
+
+# =====================================
+# AVOID
+# =====================================
+st.subheader("⚠️ Avoid")
+
+avoid = df[
+    df["Signal"] == "🔴 AVOID"
+]
+
+st.dataframe(
+    avoid.head(20),
+    use_container_width=True
+)
+
+# =====================================
 # FULL SCANNER
-# ====================================
+# =====================================
 st.subheader("📊 Top 100 Scanner")
 
 st.dataframe(
@@ -123,3 +230,19 @@ st.dataframe(
     use_container_width=True,
     height=700
 )
+
+# =====================================
+# CHART
+# =====================================
+st.subheader("📈 Coin Detail")
+
+selected = st.selectbox(
+    "Select Coin",
+    df["Symbol"]
+)
+
+selected_row = df[
+    df["Symbol"] == selected
+].iloc[0]
+
+st.write(selected_row)

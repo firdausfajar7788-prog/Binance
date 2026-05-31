@@ -85,11 +85,19 @@ st.write("DEBUG MARKET")
 st.write(market)
 
 if market.empty:
-    st.error("Market kosong")
+
+    st.error(
+        "❌ Binance tidak mengembalikan data futures"
+    )
+
     st.stop()
 
 if "symbol" not in market.columns:
-    st.error(f"Kolom symbol tidak ada. Kolom tersedia: {list(market.columns)}")
+
+    st.error(
+        f"❌ Kolom symbol tidak ditemukan: {list(market.columns)}"
+    )
+
     st.stop()
 
 

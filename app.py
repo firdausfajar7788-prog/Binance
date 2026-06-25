@@ -3,20 +3,15 @@ import requests
 import pandas as pd
 from streamlit_autorefresh import st_autorefresh
 from datetime import datetime
-import json
-import os
-import plotly.express as px
 
 # =====================================
 # CONFIG
 # =====================================
 st.set_page_config(page_title="AI Daily Crypto Scanner", layout="wide")
-
-# Auto-refresh setiap 10 menit
 st_autorefresh(interval=600000, key="refresh")
 
 st.title("🚀 AI Daily Crypto Scanner")
-st.caption("Powered by CoinGecko + Enhanced AI Scoring")
+st.caption("Powered by CoinGecko + Enhanced AI Scoring + Telegram Alerts")
 
 # =====================================
 # SESSION STATE
@@ -24,30 +19,52 @@ st.caption("Powered by CoinGecko + Enhanced AI Scoring")
 if "selected_symbol" not in st.session_state:
     st.session_state.selected_symbol = "BTC"
 
-if "history" not in st.session_state:
-    st.session_state.history = []
+if "last_notified" not in st.session_state:
+    st.session_state.last_notified = {}
 
 # =====================================
 # SIDEBAR
 # =====================================
 currency = st.sidebar.selectbox("Currency", ["USD", "IDR"])
 
-# Filter
-st.sidebar.subheader("🔍 Filter")
-min_score = st.sidebar.slider("Min Score", 0, 100, 0, key="min_score")
-min_24h = st.sidebar.slider("Min 24H %", -50, 50, 0, key="min_24h")
-max_rank = st.sidebar.slider("Max Rank", 1, 100, 100, key="max_rank")
+# =====================================
+# TELEGRAM SETUP
+# =====================================
+st.sidebar.subheader("📱 Telegram Alert")
 
-# Export
-if st.sidebar.button("📥 Export to CSV"):
-    if 'df' in locals():
-        csv = df.to_csv(index=False)
-        st.sidebar.download_button(
-            label="Download CSV",
-            data=csv,
-            file_name=f"crypto_scanner_{datetime.now().strftime('%Y%m%d')}.csv",
-            mime="text/csv"
-        )
+BOT_TOKEN = st.sidebar.text_input(
+    "Bot Token",
+    type="password",
+    value="",  # Ganti dengan token kamu
+    help="Dapatkan dari @BotFather"
+)
+
+CHAT_ID = st.sidebar.text_input(
+    "Chat ID",
+    value="",  # Ganti dengan chat ID kamu
+    help="Dapatkan dari @userinfobot"
+)
+
+send_notifications = st.sidebar.checkbox("🔔 Kirim Notifikasi", value=True)
+
+notify_min_score = st.sidebar.slider(
+    "Min Score untuk Notifikasi",
+    50, 100, 65
+)
+
+if st.sidebar.button("🚀 Test Telegram"):
+    if BOT_TOKEN and CHAT_ID:
+        try:
+            url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+            requests.post(url, json={
+                "chat_id": CHAT_ID,
+                "text": "🚀 Scanner aktif! Notifikasi akan dikirim otomatis."
+            }, timeout=10)
+            st.sidebar.success("✅ Pesan test terkirim!")
+        except Exception as e:
+            st.sidebar.error(f"❌ Error: {e}")
+    else:
+        st.sidebar.warning("⚠️ Isi Bot Token dan Chat ID")
 
 # =====================================
 # AMBIL KURS IDR
@@ -68,6 +85,45 @@ def get_usd_to_idr():
 usd_to_idr = get_usd_to_idr()
 if currency == "IDR":
     st.sidebar.info(f"💱 Kurs: 1 USD = {usd_to_idr:,.0f} IDR")
+
+# =====================================
+# FUNGSI TELEGRAM
+# =====================================
+def send_telegram(bot_token, chat_id, message):
+    if not bot_token or not chat_id:
+        return False
+    try:
+        url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
+        response = requests.post(
+            url,
+            json={
+                "chat_id": chat_id,
+                "text": message,
+                "parse_mode": "HTML",
+                "disable_web_page_preview": True
+            },
+            timeout=10
+        )
+        return response.status_code == 200
+    except:
+        return False
+
+def format_telegram_message(row):
+    emoji = "🚀" if "STRONG" in row["Signal"] else "📈"
+    return f"""
+{emoji} <b>SIGNAL DETECTED!</b>
+
+<b>Coin:</b> {row['Coin']} ({row['Symbol']})
+<b>Signal:</b> {row['Signal']}
+<b>Score:</b> {row['Score']}/100
+<b>Price:</b> ${row['Price']:.4f}
+<b>24H:</b> {row['24H %']}%
+<b>7D:</b> {row['7D %']}%
+<b>Rank:</b> #{row['Rank']}
+<b>Volume:</b> {row['Volume (M)']}M
+
+🕐 {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
+"""
 
 # =====================================
 # LOAD DATA
@@ -191,15 +247,31 @@ if not results:
     st.stop()
 
 df = pd.DataFrame(results)
+df = df.sort_values("Score", ascending=False)
 
-# Apply filters
-df_filtered = df[
-    (df["Score"] >= min_score) &
-    (df["24H %"] >= min_24h) &
-    (df["Rank"] <= max_rank)
-]
-
-df_filtered = df_filtered.sort_values("Score", ascending=False)
+# =====================================
+# TELEGRAM NOTIFICATION
+# =====================================
+if BOT_TOKEN and CHAT_ID and send_notifications:
+    new_signals = df[
+        (df["Signal"].isin(["🟢 BUY", "🔥 STRONG BUY"])) &
+        (df["Score"] >= notify_min_score)
+    ]
+    
+    notified_count = 0
+    for _, row in new_signals.iterrows():
+        symbol = row["Symbol"]
+        signal = row["Signal"]
+        last_signal = st.session_state.last_notified.get(symbol)
+        
+        if last_signal != signal:
+            message = format_telegram_message(row)
+            if send_telegram(BOT_TOKEN, CHAT_ID, message):
+                st.session_state.last_notified[symbol] = signal
+                notified_count += 1
+    
+    if notified_count > 0:
+        st.sidebar.success(f"✅ {notified_count} notifikasi terkirim!")
 
 # =====================================
 # MARKET MOOD
@@ -212,14 +284,6 @@ elif avg_score >= 45:
 else:
     mood = "🔴 BEARISH"
 
-# Save history
-st.session_state.history.append({
-    "timestamp": datetime.now(),
-    "avg_score": avg_score,
-    "strong_buy": len(df[df["Signal"] == "🔥 STRONG BUY"]),
-    "coins_scanned": len(df)
-})
-
 # =====================================
 # METRICS
 # =====================================
@@ -230,19 +294,10 @@ c3.metric("Average Score", round(avg_score, 1))
 c4.metric("Strong Buy", len(df[df["Signal"] == "🔥 STRONG BUY"]))
 
 # =====================================
-# HISTORICAL CHART
-# =====================================
-if len(st.session_state.history) > 1:
-    st.subheader("📈 Historical Score Trend")
-    hist_df = pd.DataFrame(st.session_state.history)
-    fig = px.line(hist_df, x="timestamp", y="avg_score", title="Average Score Over Time")
-    st.plotly_chart(fig, use_container_width=True)
-
-# =====================================
 # TOP 3 OPPORTUNITIES
 # =====================================
 st.subheader("🔥 Top 3 Opportunities")
-top3 = df_filtered.head(3)
+top3 = df.head(3)
 for idx, row in top3.iterrows():
     st.success(
         f"""**{row['Coin']}** ({row['Symbol']})  
@@ -280,8 +335,8 @@ st.dataframe(avoid.head(20), use_container_width=True)
 # =====================================
 # FULL SCANNER
 # =====================================
-st.subheader(f"📊 Scanner Results ({len(df_filtered)} coins)")
-st.dataframe(df_filtered, use_container_width=True, height=500)
+st.subheader("📊 Top 100 Scanner")
+st.dataframe(df, use_container_width=True, height=500)
 
 # =====================================
 # COIN DETAIL
@@ -315,5 +370,5 @@ with col2:
 st.caption(
     f"🔄 Last updated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} | "
     f"Total Coins: {len(df)} | "
-    f"Filtered: {len(df_filtered)}"
+    f"Telegram: {'✅ Aktif' if BOT_TOKEN and CHAT_ID else '❌ Tidak aktif'}"
 )

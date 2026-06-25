@@ -35,13 +35,13 @@ st.sidebar.subheader("📱 Telegram Alert")
 BOT_TOKEN = st.sidebar.text_input(
     "Bot Token",
     type="password",
-    value="",  # Ganti dengan token kamu
+    value="8819178689:AAHBU4dTqoIUfGvkarKRZLI6wbfKJh6g0RU",  # Ganti dengan token kamu
     help="Dapatkan dari @BotFather"
 )
 
 CHAT_ID = st.sidebar.text_input(
     "Chat ID",
-    value="",  # Ganti dengan chat ID kamu
+    value="999556266",  # Ganti dengan chat ID kamu
     help="Dapatkan dari @userinfobot"
 )
 

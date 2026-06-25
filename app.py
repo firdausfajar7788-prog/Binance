@@ -2,54 +2,77 @@ import streamlit as st
 import requests
 import pandas as pd
 from streamlit_autorefresh import st_autorefresh
+from datetime import datetime
+import json
+import os
+import plotly.express as px
 
 # =====================================
 # CONFIG
 # =====================================
 st.set_page_config(page_title="AI Daily Crypto Scanner", layout="wide")
 
-# Auto-refresh setiap 10 menit (600 detik) - lebih stabil
+# Auto-refresh setiap 10 menit
 st_autorefresh(interval=600000, key="refresh")
 
 st.title("🚀 AI Daily Crypto Scanner")
 st.caption("Powered by CoinGecko + Enhanced AI Scoring")
 
 # =====================================
-# SESSION STATE untuk menyimpan pilihan user
+# SESSION STATE
 # =====================================
 if "selected_symbol" not in st.session_state:
     st.session_state.selected_symbol = "BTC"
+
+if "history" not in st.session_state:
+    st.session_state.history = []
 
 # =====================================
 # SIDEBAR
 # =====================================
 currency = st.sidebar.selectbox("Currency", ["USD", "IDR"])
 
+# Filter
+st.sidebar.subheader("🔍 Filter")
+min_score = st.sidebar.slider("Min Score", 0, 100, 0, key="min_score")
+min_24h = st.sidebar.slider("Min 24H %", -50, 50, 0, key="min_24h")
+max_rank = st.sidebar.slider("Max Rank", 1, 100, 100, key="max_rank")
+
+# Export
+if st.sidebar.button("📥 Export to CSV"):
+    if 'df' in locals():
+        csv = df.to_csv(index=False)
+        st.sidebar.download_button(
+            label="Download CSV",
+            data=csv,
+            file_name=f"crypto_scanner_{datetime.now().strftime('%Y%m%d')}.csv",
+            mime="text/csv"
+        )
+
 # =====================================
-# AMBIL KURS IDR REAL-TIME (cache 1 jam)
+# AMBIL KURS IDR
 # =====================================
 @st.cache_data(ttl=3600)
 def get_usd_to_idr():
     try:
-        # Menggunakan API gratis dari exchangerate-api.com
         url = "https://api.exchangerate-api.com/v4/latest/USD"
         r = requests.get(url, timeout=10)
         if r.status_code == 200:
             data = r.json()
             return data["rates"]["IDR"]
         else:
-            return 15500  # fallback value
+            return 15500
     except:
-        return 15500  # fallback
+        return 15500
 
 usd_to_idr = get_usd_to_idr()
 if currency == "IDR":
     st.sidebar.info(f"💱 Kurs: 1 USD = {usd_to_idr:,.0f} IDR")
 
 # =====================================
-# LOAD DATA DARI COINGECKO (dengan cache & error handling)
+# LOAD DATA
 # =====================================
-@st.cache_data(ttl=300)  # cache 5 menit
+@st.cache_data(ttl=300)
 def load_coins():
     url = "https://api.coingecko.com/api/v3/coins/markets"
     params = {
@@ -58,7 +81,7 @@ def load_coins():
         "per_page": 100,
         "page": 1,
         "sparkline": False,
-        "price_change_percentage": "24h,7d"  # tambahkan data 7 hari
+        "price_change_percentage": "24h,7d"
     }
 
     try:
@@ -66,7 +89,6 @@ def load_coins():
         if response.status_code != 200:
             st.error(f"API Error: {response.status_code}")
             return None
-        
         coins = response.json()
         return coins
     except Exception as e:
@@ -76,10 +98,10 @@ def load_coins():
 coins = load_coins()
 
 if coins is None:
-    st.stop()  # Hentikan eksekusi jika data gagal load
+    st.stop()
 
 # =====================================
-# HITUNG AI SCORE (VERSI LEBIH CERDAS)
+# HITUNG AI SCORE
 # =====================================
 results = []
 
@@ -87,7 +109,6 @@ for coin in coins:
     try:
         score = 0
         
-        # Data dasar
         change_24h = coin.get("price_change_percentage_24h", 0) or 0
         change_7d = coin.get("price_change_percentage_7d_in_currency", 0) or 0
         marketcap_rank = coin.get("market_cap_rank", 999) or 999
@@ -96,9 +117,7 @@ for coin in coins:
         ath = coin.get("ath", 1) or 1
         current_price = coin.get("current_price", 0) or 0
         
-        # --- KRITERIA SKOR ---
-        
-        # 1. Momentum 24h (max 50 poin)
+        # 1. Momentum 24h
         if change_24h > 10:
             score += 50
         elif change_24h > 5:
@@ -108,14 +127,13 @@ for coin in coins:
         elif change_24h > 0:
             score += 10
         
-        # 2. Momentum 7 hari (akselerasi) - tambahan 20 poin
+        # 2. Momentum 7 hari
         if change_7d > 20:
             score += 20
         elif change_7d > 10 and change_24h > change_7d * 0.3:
-            # Naik dalam 24 jam lebih cepat dari rata-rata 7 hari
             score += 15
         
-        # 3. Rank market cap (max 25 poin)
+        # 3. Rank market cap
         if marketcap_rank <= 20:
             score += 25
         elif marketcap_rank <= 50:
@@ -123,23 +141,23 @@ for coin in coins:
         elif marketcap_rank <= 100:
             score += 10
         
-        # 4. Likuiditas (volume vs market cap) - max 20 poin
+        # 4. Likuiditas
         if market_cap > 0:
             volume_ratio = volume / market_cap
-            if volume_ratio > 0.1:  # volume > 10% market cap
+            if volume_ratio > 0.1:
                 score += 20
             elif volume_ratio > 0.05:
                 score += 10
         
-        # 5. Distance to ATH (max 15 poin)
+        # 5. Distance to ATH
         if current_price > 0 and ath > 0:
             pct_to_ath = (current_price / ath) * 100
-            if pct_to_ath > 90:  # dalam 10% dari ATH
+            if pct_to_ath > 90:
                 score += 15
             elif pct_to_ath > 75:
                 score += 8
         
-        # --- DETERMINE SIGNAL ---
+        # Signal
         if score >= 80:
             signal = "🔥 STRONG BUY"
         elif score >= 65:
@@ -149,7 +167,6 @@ for coin in coins:
         else:
             signal = "🔴 AVOID"
         
-        # Konversi harga berdasarkan mata uang
         price = current_price
         if currency == "IDR":
             price *= usd_to_idr
@@ -167,7 +184,6 @@ for coin in coins:
         })
         
     except Exception as e:
-        # Skip coin yang bermasalah
         continue
 
 if not results:
@@ -175,7 +191,15 @@ if not results:
     st.stop()
 
 df = pd.DataFrame(results)
-df = df.sort_values("Score", ascending=False)
+
+# Apply filters
+df_filtered = df[
+    (df["Score"] >= min_score) &
+    (df["24H %"] >= min_24h) &
+    (df["Rank"] <= max_rank)
+]
+
+df_filtered = df_filtered.sort_values("Score", ascending=False)
 
 # =====================================
 # MARKET MOOD
@@ -188,19 +212,37 @@ elif avg_score >= 45:
 else:
     mood = "🔴 BEARISH"
 
+# Save history
+st.session_state.history.append({
+    "timestamp": datetime.now(),
+    "avg_score": avg_score,
+    "strong_buy": len(df[df["Signal"] == "🔥 STRONG BUY"]),
+    "coins_scanned": len(df)
+})
+
 # =====================================
 # METRICS
 # =====================================
-c1, c2, c3 = st.columns(3)
+c1, c2, c3, c4 = st.columns(4)
 c1.metric("Market Mood", mood)
 c2.metric("Coins Scanned", len(df))
 c3.metric("Average Score", round(avg_score, 1))
+c4.metric("Strong Buy", len(df[df["Signal"] == "🔥 STRONG BUY"]))
+
+# =====================================
+# HISTORICAL CHART
+# =====================================
+if len(st.session_state.history) > 1:
+    st.subheader("📈 Historical Score Trend")
+    hist_df = pd.DataFrame(st.session_state.history)
+    fig = px.line(hist_df, x="timestamp", y="avg_score", title="Average Score Over Time")
+    st.plotly_chart(fig, use_container_width=True)
 
 # =====================================
 # TOP 3 OPPORTUNITIES
 # =====================================
 st.subheader("🔥 Top 3 Opportunities")
-top3 = df.head(3)
+top3 = df_filtered.head(3)
 for idx, row in top3.iterrows():
     st.success(
         f"""**{row['Coin']}** ({row['Symbol']})  
@@ -209,7 +251,7 @@ for idx, row in top3.iterrows():
     )
 
 # =====================================
-# BREAKOUT WATCHLIST (24h > 5% DAN Score > 40)
+# BREAKOUT WATCHLIST
 # =====================================
 st.subheader("🚀 Breakout Watchlist")
 breakout = df[(df["24H %"] > 5) & (df["Score"] > 40)]
@@ -238,11 +280,11 @@ st.dataframe(avoid.head(20), use_container_width=True)
 # =====================================
 # FULL SCANNER
 # =====================================
-st.subheader("📊 Top 100 Scanner")
-st.dataframe(df, use_container_width=True, height=500)
+st.subheader(f"📊 Scanner Results ({len(df_filtered)} coins)")
+st.dataframe(df_filtered, use_container_width=True, height=500)
 
 # =====================================
-# CHART (menggunakan session state)
+# COIN DETAIL
 # =====================================
 st.subheader("📈 Coin Detail")
 
@@ -254,12 +296,9 @@ selected = st.selectbox(
     key="coin_selector"
 )
 
-# Simpan ke session state
 st.session_state.selected_symbol = selected
-
 selected_row = df[df["Symbol"] == selected].iloc[0]
 
-# Tampilkan detail lebih rapi
 col1, col2 = st.columns(2)
 with col1:
     st.metric("Coin", selected_row["Coin"])
@@ -269,3 +308,12 @@ with col2:
     st.metric("Market Cap Rank", f"#{selected_row['Rank']}")
     st.metric("AI Score", f"{selected_row['Score']}/100")
     st.metric("Signal", selected_row["Signal"])
+
+# =====================================
+# FOOTER
+# =====================================
+st.caption(
+    f"🔄 Last updated: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')} | "
+    f"Total Coins: {len(df)} | "
+    f"Filtered: {len(df_filtered)}"
+)

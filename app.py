@@ -2,7 +2,7 @@ import streamlit as st
 import requests
 import pandas as pd
 from streamlit_autorefresh import st_autorefresh
-from datetime import datetime, timedelta
+from datetime import datetime
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -10,7 +10,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 # PAGE CONFIG
 # =========================================================
 st.set_page_config(
-    page_title="AI Daily Crypto Scanner PRO (CoinCap)",
+    page_title="AI Daily Crypto Scanner PRO (Hybrid)",
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -95,8 +95,8 @@ if "last_update_time" not in st.session_state:
 # =========================================================
 # HEADER
 # =========================================================
-st.title("🚀 AI Daily Crypto Scanner PRO (CoinCap)")
-st.caption("Real-time data from CoinCap + Volume Trend 7-day comparison + Telegram Alerts")
+st.title("🚀 AI Daily Crypto Scanner PRO (Hybrid)")
+st.caption("Auto fallback: CoinCap → CoinGecko | Volume Trend + Telegram Alerts")
 col_time, _ = st.columns([2, 3])
 with col_time:
     st.caption(f"🕐 Last updated: {st.session_state.last_update_time.strftime('%Y-%m-%d %H:%M:%S')}")
@@ -124,7 +124,7 @@ with st.sidebar:
             if BOT_TOKEN and CHAT_ID:
                 try:
                     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-                    r = requests.post(url, json={"chat_id": CHAT_ID, "text": "🚀 Scanner CoinCap aktif!"}, timeout=10)
+                    r = requests.post(url, json={"chat_id": CHAT_ID, "text": "🚀 Scanner Hybrid aktif!"}, timeout=10)
                     st.success("✅ Pesan test terkirim!" if r.status_code == 200 else f"❌ Error {r.status_code}")
                 except Exception as e:
                     st.error(f"❌ Error: {e}")
@@ -195,36 +195,53 @@ def format_telegram_message(row):
 # =========================================================
 # COINCAP API – AMBIL DATA ASET
 # =========================================================
-@st.cache_data(ttl=300)  # 5 menit
-def load_coincap_assets(limit=200):
-    """Ambil daftar aset dari CoinCap, diurutkan berdasarkan market cap (default)"""
+@st.cache_data(ttl=300)
+def load_coincap_assets(limit=100):
     url = f"https://api.coincap.io/v2/assets?limit={limit}"
     try:
         resp = requests.get(url, timeout=15)
         if resp.status_code == 200:
             data = resp.json()["data"]
-            # Filter coin dengan price > 0 dan volume > 0
             coins = [c for c in data if float(c.get("priceUsd", 0)) > 0 and float(c.get("volumeUsd", 0)) > 0]
-            return coins
+            return coins, "CoinCap"
         else:
-            st.error(f"CoinCap API error: {resp.status_code}")
-            return None
+            return None, f"CoinCap error {resp.status_code}"
     except Exception as e:
-        st.error(f"Gagal ambil data CoinCap: {e}")
-        return None
+        return None, str(e)
+
+# =========================================================
+# COINGECKO API – AMBIL DATA ASET (FALLBACK)
+# =========================================================
+@st.cache_data(ttl=300)
+def load_coingecko_assets(limit=100):
+    url = "https://api.coingecko.com/api/v3/coins/markets"
+    params = {
+        "vs_currency": "usd",
+        "order": "market_cap_desc",
+        "per_page": limit,
+        "page": 1,
+        "sparkline": False,
+        "price_change_percentage": "24h,7d"
+    }
+    try:
+        resp = requests.get(url, params=params, timeout=20)
+        if resp.status_code == 200:
+            return resp.json(), "CoinGecko"
+        else:
+            return None, f"CoinGecko error {resp.status_code}"
+    except Exception as e:
+        return None, str(e)
 
 # =========================================================
 # COINCAP – AMBIL VOLUME HISTORIS 7 HARI
 # =========================================================
-@st.cache_data(ttl=3600)  # cache 1 jam
+@st.cache_data(ttl=3600)
 def get_coincap_volume_history(asset_id):
-    """Ambil data volume harian 7 hari terakhir untuk satu asset"""
     url = f"https://api.coincap.io/v2/assets/{asset_id}/history?interval=d1"
     try:
         resp = requests.get(url, timeout=10)
         if resp.status_code == 200:
             data = resp.json()["data"]
-            # Ambil 7 titik terakhir (hari)
             volumes = [float(d["volumeUsd"]) for d in data[-7:] if float(d["volumeUsd"]) > 0]
             if len(volumes) >= 3:
                 return volumes
@@ -233,7 +250,25 @@ def get_coincap_volume_history(asset_id):
         return None
 
 # =========================================================
-# PROSES DATA COINCAP
+# COINGECKO – AMBIL VOLUME HISTORIS 7 HARI
+# =========================================================
+@st.cache_data(ttl=3600)
+def get_coingecko_volume_history(coin_id):
+    url = f"https://api.coingecko.com/api/v3/coins/{coin_id}/market_chart"
+    params = {"vs_currency": "usd", "days": "7", "interval": "daily"}
+    try:
+        resp = requests.get(url, params=params, timeout=10)
+        if resp.status_code == 200:
+            data = resp.json()
+            volumes = [v[1] for v in data.get("total_volumes", []) if v[1] > 0]
+            if len(volumes) >= 3:
+                return volumes
+        return None
+    except:
+        return None
+
+# =========================================================
+# PROSES DATA – COINCAP
 # =========================================================
 def process_coincap_data(assets, currency, usd_to_idr):
     results = []
@@ -243,86 +278,150 @@ def process_coincap_data(assets, currency, usd_to_idr):
             name = asset["name"]
             price_usd = float(asset["priceUsd"])
             volume_24h = float(asset["volumeUsd"])
-            change_24h = float(asset["changePercent24Hr"])  # sudah dalam persen
-            # CoinCap tidak memberikan change 7d, kita bisa estimasi dari history, tapi skip dulu
-            # Kita akan hitung dari data historis jika ada
+            change_24h = float(asset["changePercent24Hr"])
             market_cap = float(asset["marketCapUsd"]) if asset.get("marketCapUsd") else 0
             rank = int(asset.get("rank", 999))
             
-            # Skor AI (sama seperti sebelumnya)
             score = 0
-            # 24h momentum
             if change_24h > 10: score += 50
             elif change_24h > 5: score += 35
             elif change_24h > 2: score += 20
             elif change_24h > 0: score += 10
             
-            # market cap rank
             if rank <= 20: score += 25
             elif rank <= 50: score += 20
             elif rank <= 100: score += 10
             
-            # likuiditas (volume/market cap)
             if market_cap > 0:
                 vol_ratio = volume_24h / market_cap
                 if vol_ratio > 0.1: score += 20
                 elif vol_ratio > 0.05: score += 10
                 if vol_ratio > 0.15: score += 5
             
-            # distance to ATH? CoinCap tidak berikan ATH, skip
-            
-            # signal
             if score >= 80: signal = "🔥 STRONG BUY"
             elif score >= 65: signal = "🟢 BUY"
             elif score >= 45: signal = "🟡 WAIT"
             else: signal = "🔴 AVOID"
             
             price = price_usd * (usd_to_idr if currency == "IDR" else 1)
-            
             results.append({
                 "Coin": name,
                 "Symbol": symbol,
                 "Price": round(price, 4),
                 "24H %": round(change_24h, 2),
-                "7D %": 0.0,  # akan diisi nanti jika ada data
+                "7D %": 0.0,
                 "Rank": rank,
                 "Volume (M)": round(volume_24h / 1_000_000, 1),
                 "Score": score,
                 "Signal": signal,
-                "asset_id": asset["id"]  # untuk ambil history
+                "asset_id": asset["id"],
+                "source": "CoinCap"
             })
-        except Exception as e:
+        except:
             continue
     return results
 
 # =========================================================
-# TAMBAHKAN VOLUME TREND (7-DAY AVG)
+# PROSES DATA – COINGECKO
+# =========================================================
+def process_coingecko_data(assets, currency, usd_to_idr):
+    results = []
+    for coin in assets:
+        try:
+            symbol = coin["symbol"].upper()
+            name = coin["name"]
+            price_usd = coin.get("current_price", 0)
+            volume_24h = coin.get("total_volume", 0)
+            change_24h = coin.get("price_change_percentage_24h", 0) or 0
+            change_7d = coin.get("price_change_percentage_7d_in_currency", 0) or 0
+            rank = coin.get("market_cap_rank", 999)
+            market_cap = coin.get("market_cap", 0)
+            
+            score = 0
+            if change_24h > 10: score += 50
+            elif change_24h > 5: score += 35
+            elif change_24h > 2: score += 20
+            elif change_24h > 0: score += 10
+            
+            if change_7d > 20: score += 20
+            elif change_7d > 10 and change_24h > change_7d * 0.3: score += 15
+            
+            if rank <= 20: score += 25
+            elif rank <= 50: score += 20
+            elif rank <= 100: score += 10
+            
+            if market_cap > 0:
+                vol_ratio = volume_24h / market_cap
+                if vol_ratio > 0.1: score += 20
+                elif vol_ratio > 0.05: score += 10
+                if vol_ratio > 0.15: score += 5
+            
+            if score >= 80: signal = "🔥 STRONG BUY"
+            elif score >= 65: signal = "🟢 BUY"
+            elif score >= 45: signal = "🟡 WAIT"
+            else: signal = "🔴 AVOID"
+            
+            price = price_usd * (usd_to_idr if currency == "IDR" else 1)
+            results.append({
+                "Coin": name,
+                "Symbol": symbol,
+                "Price": round(price, 4),
+                "24H %": round(change_24h, 2),
+                "7D %": round(change_7d, 2),
+                "Rank": rank,
+                "Volume (M)": round(volume_24h / 1_000_000, 1),
+                "Score": score,
+                "Signal": signal,
+                "asset_id": coin["id"],
+                "source": "CoinGecko"
+            })
+        except:
+            continue
+    return results
+
+# =========================================================
+# TAMBAHKAN VOLUME TREND (UNIFIED)
 # =========================================================
 def add_volume_trend(df):
-    """Tambahkan kolom Volume Trend berdasarkan data historis CoinCap"""
+    source = df.iloc[0]["source"] if not df.empty else "CoinGecko"
     trend_data = {}
-    # Gunakan thread pool untuk mempercepat
-    with ThreadPoolExecutor(max_workers=5) as executor:
-        future_to_symbol = {}
-        for _, row in df.iterrows():
-            asset_id = row.get("asset_id")
-            symbol = row["Symbol"]
-            if asset_id:
-                future = executor.submit(get_coincap_volume_history, asset_id)
-                future_to_symbol[future] = symbol
-        
-        for future in as_completed(future_to_symbol):
-            symbol = future_to_symbol[future]
-            try:
-                volumes = future.result()
-                if volumes:
-                    avg_7d = sum(volumes) / len(volumes)
-                    trend_data[symbol] = avg_7d
-            except:
-                pass
-            time.sleep(0.1)  # hindari rate limit
     
-    # Tambahkan kolom ke dataframe
+    if source == "CoinCap":
+        with ThreadPoolExecutor(max_workers=5) as executor:
+            future_to_symbol = {}
+            for _, row in df.iterrows():
+                asset_id = row.get("asset_id")
+                if asset_id:
+                    future = executor.submit(get_coincap_volume_history, asset_id)
+                    future_to_symbol[future] = row["Symbol"]
+            for future in as_completed(future_to_symbol):
+                symbol = future_to_symbol[future]
+                try:
+                    vols = future.result()
+                    if vols:
+                        trend_data[symbol] = sum(vols) / len(vols)
+                except:
+                    pass
+                time.sleep(0.1)
+    else:
+        # CoinGecko
+        with ThreadPoolExecutor(max_workers=5) as executor:
+            future_to_symbol = {}
+            for _, row in df.iterrows():
+                asset_id = row.get("asset_id")
+                if asset_id:
+                    future = executor.submit(get_coingecko_volume_history, asset_id)
+                    future_to_symbol[future] = row["Symbol"]
+            for future in as_completed(future_to_symbol):
+                symbol = future_to_symbol[future]
+                try:
+                    vols = future.result()
+                    if vols:
+                        trend_data[symbol] = sum(vols) / len(vols)
+                except:
+                    pass
+                time.sleep(0.1)
+    
     def get_trend(row):
         sym = row["Symbol"]
         current_vol = row["Volume (M)"] * 1_000_000
@@ -341,15 +440,24 @@ def add_volume_trend(df):
     return df
 
 # =========================================================
-# MAIN
+# MAIN – HYBRID LOADER
 # =========================================================
-assets = load_coincap_assets(limit=100)
+# Coba CoinCap dulu
+assets, source_or_error = load_coincap_assets(limit=100)
 if assets is None:
-    st.warning("⚠️ Gagal mengambil data dari CoinCap. Coba refresh.")
-    st.stop()
+    st.warning(f"⚠️ CoinCap gagal: {source_or_error}. Mencoba CoinGecko...")
+    assets, source_or_error = load_coingecko_assets(limit=100)
+    if assets is None:
+        st.error(f"❌ Semua sumber data gagal: {source_or_error}. Coba refresh atau periksa koneksi.")
+        st.stop()
+    else:
+        st.info("✅ Menggunakan data dari CoinGecko (fallback)")
+        # Proses dengan CoinGecko
+        results = process_coingecko_data(assets, currency, usd_to_idr)
+else:
+    st.success("✅ Menggunakan data dari CoinCap (real-time)")
+    results = process_coincap_data(assets, currency, usd_to_idr)
 
-# Proses data
-results = process_coincap_data(assets, currency, usd_to_idr)
 if not results:
     st.error("Tidak ada data yang bisa diproses")
     st.stop()
@@ -501,5 +609,6 @@ st_autorefresh(interval=600000, key="refresh")
 st.divider()
 st.caption(
     f"🔄 Last updated: {st.session_state.last_update_time.strftime('%Y-%m-%d %H:%M:%S')} | "
-    f"Total: {len(df)} | Telegram: {'✅' if BOT_TOKEN and CHAT_ID else '❌'} | Currency: {currency}"
+    f"Total: {len(df)} | Sumber: {df.iloc[0]['source'] if not df.empty else 'N/A'} | "
+    f"Telegram: {'✅' if BOT_TOKEN and CHAT_ID else '❌'} | Currency: {currency}"
 )

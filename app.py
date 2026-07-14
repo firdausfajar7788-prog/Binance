@@ -2,7 +2,7 @@ import streamlit as st
 import requests
 import pandas as pd
 from streamlit_autorefresh import st_autorefresh
-from datetime import datetime
+from datetime import datetime, timedelta
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -10,7 +10,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 # PAGE CONFIG
 # =========================================================
 st.set_page_config(
-    page_title="AI Daily Crypto Scanner PRO",
+    page_title="AI Daily Crypto Scanner PRO (CoinCap)",
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -20,10 +20,7 @@ st.set_page_config(
 # =========================================================
 st.markdown("""
 <style>
-    .stApp {
-        background: #0a0a1a;
-    }
-    
+    .stApp { background: #0a0a1a; }
     [data-testid="stMetric"] {
         background: linear-gradient(145deg, #111827, #0b1220);
         border: 1px solid #1e293b;
@@ -31,15 +28,8 @@ st.markdown("""
         padding: 16px;
         box-shadow: 0 4px 20px rgba(0,255,255,0.05);
     }
-    [data-testid="stMetricLabel"] {
-        color: #94a3b8;
-        font-size: 13px;
-    }
-    [data-testid="stMetricValue"] {
-        color: #f1f5f9;
-        font-size: 24px;
-        font-weight: 700;
-    }
+    [data-testid="stMetricLabel"] { color: #94a3b8; font-size: 13px; }
+    [data-testid="stMetricValue"] { color: #f1f5f9; font-size: 24px; font-weight: 700; }
     
     .signal-strong-buy {
         background: linear-gradient(135deg, rgba(0,255,136,0.2), rgba(0,255,136,0.05));
@@ -73,7 +63,6 @@ st.markdown("""
         color: #ff3b5c;
         font-weight: 600;
     }
-    
     .stButton > button {
         background: linear-gradient(145deg, #00ff88, #00cc66);
         color: #000;
@@ -87,41 +76,27 @@ st.markdown("""
         transform: scale(1.03);
         box-shadow: 0 0 30px rgba(0,255,136,0.3);
     }
-    
-    .volume-up {
-        color: #00ff88;
-        font-weight: 700;
-    }
-    .volume-down {
-        color: #ff3b5c;
-        font-weight: 700;
-    }
-    .volume-neutral {
-        color: #ffaa00;
-        font-weight: 700;
-    }
+    .volume-up { color: #00ff88; font-weight: 700; }
+    .volume-down { color: #ff3b5c; font-weight: 700; }
+    .volume-neutral { color: #ffaa00; font-weight: 700; }
 </style>
 """, unsafe_allow_html=True)
 
 # =========================================================
-# SESSION STATE INIT
+# SESSION STATE
 # =========================================================
 if "selected_symbol" not in st.session_state:
     st.session_state.selected_symbol = "BTC"
-
 if "last_notified" not in st.session_state:
     st.session_state.last_notified = {}
-
 if "last_update_time" not in st.session_state:
     st.session_state.last_update_time = datetime.now()
 
 # =========================================================
 # HEADER
 # =========================================================
-st.title("🚀 AI Daily Crypto Scanner PRO")
-st.caption("Powered by CoinGecko + Enhanced AI Scoring + Volume Trend Analysis + Telegram Alerts")
-
-# Tampilkan waktu update terakhir
+st.title("🚀 AI Daily Crypto Scanner PRO (CoinCap)")
+st.caption("Real-time data from CoinCap + Volume Trend 7-day comparison + Telegram Alerts")
 col_time, _ = st.columns([2, 3])
 with col_time:
     st.caption(f"🕐 Last updated: {st.session_state.last_update_time.strftime('%Y-%m-%d %H:%M:%S')}")
@@ -131,37 +106,17 @@ with col_time:
 # =========================================================
 with st.sidebar:
     st.header("⚙️ Settings")
-    
-    # --- Currency ---
     currency = st.selectbox("💱 Currency", ["USD", "IDR"])
-    
     st.divider()
     
-    # --- Telegram Settings ---
+    # Telegram
     st.subheader("📱 Telegram Alert")
-    
     default_token = st.secrets.get("TELEGRAM_BOT_TOKEN", "")
     default_chat = st.secrets.get("TELEGRAM_CHAT_ID", "")
-    
-    BOT_TOKEN = st.text_input(
-        "Bot Token",
-        type="password",
-        value=default_token,
-        help="Dapatkan dari @BotFather"
-    )
-    
-    CHAT_ID = st.text_input(
-        "Chat ID",
-        value=default_chat,
-        help="Dapatkan dari @userinfobot"
-    )
-    
+    BOT_TOKEN = st.text_input("Bot Token", type="password", value=default_token)
+    CHAT_ID = st.text_input("Chat ID", value=default_chat)
     send_notifications = st.checkbox("🔔 Kirim Notifikasi", value=True)
-    
-    notify_min_score = st.slider(
-        "Min Score untuk Notifikasi",
-        50, 100, 65
-    )
+    notify_min_score = st.slider("Min Score untuk Notifikasi", 50, 100, 65)
     
     col_test1, col_test2 = st.columns(2)
     with col_test1:
@@ -169,44 +124,29 @@ with st.sidebar:
             if BOT_TOKEN and CHAT_ID:
                 try:
                     url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-                    response = requests.post(
-                        url,
-                        json={
-                            "chat_id": CHAT_ID,
-                            "text": "🚀 Scanner PRO aktif! Volume Trend + Notifikasi otomatis."
-                        },
-                        timeout=10
-                    )
-                    if response.status_code == 200:
-                        st.success("✅ Pesan test terkirim!")
-                    else:
-                        st.error(f"❌ Error: {response.status_code}")
+                    r = requests.post(url, json={"chat_id": CHAT_ID, "text": "🚀 Scanner CoinCap aktif!"}, timeout=10)
+                    st.success("✅ Pesan test terkirim!" if r.status_code == 200 else f"❌ Error {r.status_code}")
                 except Exception as e:
                     st.error(f"❌ Error: {e}")
             else:
                 st.warning("⚠️ Isi Bot Token dan Chat ID")
-    
     with col_test2:
         if st.button("🔄 Refresh Now", use_container_width=True):
             st.cache_data.clear()
             st.rerun()
-    
     st.divider()
     
-    # --- Info ---
     st.subheader("📊 Status")
     st.metric("Coins Scanned", "100")
     st.metric("Auto Refresh", "10 menit")
-    
-    # --- Volume Trend Info ---
     st.divider()
     st.caption("📊 **Volume Trend Legend:**")
-    st.caption("🔼 Volume > rata-rata 7 hari (naik)")
-    st.caption("🔽 Volume < rata-rata 7 hari (turun)")
-    st.caption("➡️ Volume stabil")
+    st.caption("🔼 Volume > 130% rata-rata 7 hari (naik)")
+    st.caption("🔽 Volume < 70% rata-rata 7 hari (turun)")
+    st.caption("➡️ Volume stabil (70-130%)")
 
 # =========================================================
-# GET USD TO IDR
+# FUNGSI AMBIL KURS IDR
 # =========================================================
 @st.cache_data(ttl=3600)
 def get_usd_to_idr():
@@ -214,45 +154,30 @@ def get_usd_to_idr():
         url = "https://api.exchangerate-api.com/v4/latest/USD"
         r = requests.get(url, timeout=10)
         if r.status_code == 200:
-            data = r.json()
-            return data["rates"]["IDR"]
-        else:
-            return 15500
+            return r.json()["rates"]["IDR"]
     except:
-        return 15500
+        pass
+    return 15500
 
 usd_to_idr = get_usd_to_idr()
 if currency == "IDR":
     st.sidebar.info(f"💱 1 USD = {usd_to_idr:,.0f} IDR")
 
 # =========================================================
-# TELEGRAM FUNCTIONS
+# FUNGSI TELEGRAM
 # =========================================================
 def send_telegram(bot_token, chat_id, message):
     if not bot_token or not chat_id:
-        return False, "Bot token atau Chat ID kosong"
+        return False, "Kosong"
     try:
         url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
-        response = requests.post(
-            url,
-            json={
-                "chat_id": chat_id,
-                "text": message,
-                "parse_mode": "HTML",
-                "disable_web_page_preview": True
-            },
-            timeout=10
-        )
-        if response.status_code == 200:
-            return True, "Berhasil"
-        else:
-            return False, f"HTTP {response.status_code}"
+        r = requests.post(url, json={"chat_id": chat_id, "text": message, "parse_mode": "HTML"}, timeout=10)
+        return r.status_code == 200, f"HTTP {r.status_code}"
     except Exception as e:
         return False, str(e)
 
 def format_telegram_message(row):
     emoji = "🚀" if "STRONG" in row["Signal"] else "📈"
-    volume_icon = row.get("Volume Trend", "➡️")
     return f"""
 {emoji} <b>SIGNAL DETECTED!</b>
 
@@ -262,210 +187,169 @@ def format_telegram_message(row):
 <b>Price:</b> ${row['Price']:.4f}
 <b>24H:</b> {row['24H %']}%
 <b>7D:</b> {row['7D %']}%
-<b>Volume:</b> {row['Volume (M)']}M {volume_icon}
+<b>Volume:</b> {row['Volume (M)']}M {row.get('Volume Trend', '')}
 <b>Rank:</b> #{row['Rank']}
-
 🕐 {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
 """
 
 # =========================================================
-# LOAD DATA FROM COINGECKO
+# COINCAP API – AMBIL DATA ASET
 # =========================================================
-@st.cache_data(ttl=300)
-def load_coins():
-    url = "https://api.coingecko.com/api/v3/coins/markets"
-    params = {
-        "vs_currency": "usd",
-        "order": "market_cap_desc",
-        "per_page": 100,
-        "page": 1,
-        "sparkline": False,
-        "price_change_percentage": "24h,7d"
-    }
-
+@st.cache_data(ttl=300)  # 5 menit
+def load_coincap_assets(limit=200):
+    """Ambil daftar aset dari CoinCap, diurutkan berdasarkan market cap (default)"""
+    url = f"https://api.coincap.io/v2/assets?limit={limit}"
     try:
-        response = requests.get(url, params=params, timeout=20)
-        if response.status_code != 200:
-            st.error(f"⚠️ API Error: {response.status_code} - Gunakan data cache jika tersedia")
+        resp = requests.get(url, timeout=15)
+        if resp.status_code == 200:
+            data = resp.json()["data"]
+            # Filter coin dengan price > 0 dan volume > 0
+            coins = [c for c in data if float(c.get("priceUsd", 0)) > 0 and float(c.get("volumeUsd", 0)) > 0]
+            return coins
+        else:
+            st.error(f"CoinCap API error: {resp.status_code}")
             return None
-        coins = response.json()
-        return coins
     except Exception as e:
-        st.error(f"⚠️ Gagal mengambil data: {e}")
+        st.error(f"Gagal ambil data CoinCap: {e}")
         return None
 
 # =========================================================
-# VOLUME TREND - AMBIL RATA-RATA VOLUME 7 HARI
+# COINCAP – AMBIL VOLUME HISTORIS 7 HARI
 # =========================================================
-@st.cache_data(ttl=3600)
-def get_volume_avg(coin_id):
-    """Mengambil rata-rata volume 7 hari untuk satu coin"""
+@st.cache_data(ttl=3600)  # cache 1 jam
+def get_coincap_volume_history(asset_id):
+    """Ambil data volume harian 7 hari terakhir untuk satu asset"""
+    url = f"https://api.coincap.io/v2/assets/{asset_id}/history?interval=d1"
     try:
-        url = f"https://api.coingecko.com/api/v3/coins/{coin_id}/market_chart"
-        params = {
-            "vs_currency": "usd",
-            "days": "7",
-            "interval": "daily"
-        }
-        response = requests.get(url, params=params, timeout=10)
-        if response.status_code == 200:
-            data = response.json()
-            volumes = [v[1] for v in data.get("total_volumes", []) if v[1] > 0]
+        resp = requests.get(url, timeout=10)
+        if resp.status_code == 200:
+            data = resp.json()["data"]
+            # Ambil 7 titik terakhir (hari)
+            volumes = [float(d["volumeUsd"]) for d in data[-7:] if float(d["volumeUsd"]) > 0]
             if len(volumes) >= 3:
-                return sum(volumes) / len(volumes)
+                return volumes
         return None
     except:
         return None
 
-def add_volume_trend(df, coins_data):
-    """
-    Menambahkan kolom 'Volume Trend' ke dataframe
-    coins_data adalah list dari response CoinGecko (memiliki field 'id')
-    """
-    # Buat dictionary mapping symbol ke id
-    symbol_to_id = {coin["symbol"].upper(): coin["id"] for coin in coins_data}
-    
-    # Ambil volume rata-rata untuk setiap simbol yang ada di df
-    volume_avgs = {}
-    symbols = df["Symbol"].tolist()
-    
-    # Gunakan ThreadPool untuk parallel request (max 5 concurrent)
+# =========================================================
+# PROSES DATA COINCAP
+# =========================================================
+def process_coincap_data(assets, currency, usd_to_idr):
+    results = []
+    for asset in assets:
+        try:
+            symbol = asset["symbol"].upper()
+            name = asset["name"]
+            price_usd = float(asset["priceUsd"])
+            volume_24h = float(asset["volumeUsd"])
+            change_24h = float(asset["changePercent24Hr"])  # sudah dalam persen
+            # CoinCap tidak memberikan change 7d, kita bisa estimasi dari history, tapi skip dulu
+            # Kita akan hitung dari data historis jika ada
+            market_cap = float(asset["marketCapUsd"]) if asset.get("marketCapUsd") else 0
+            rank = int(asset.get("rank", 999))
+            
+            # Skor AI (sama seperti sebelumnya)
+            score = 0
+            # 24h momentum
+            if change_24h > 10: score += 50
+            elif change_24h > 5: score += 35
+            elif change_24h > 2: score += 20
+            elif change_24h > 0: score += 10
+            
+            # market cap rank
+            if rank <= 20: score += 25
+            elif rank <= 50: score += 20
+            elif rank <= 100: score += 10
+            
+            # likuiditas (volume/market cap)
+            if market_cap > 0:
+                vol_ratio = volume_24h / market_cap
+                if vol_ratio > 0.1: score += 20
+                elif vol_ratio > 0.05: score += 10
+                if vol_ratio > 0.15: score += 5
+            
+            # distance to ATH? CoinCap tidak berikan ATH, skip
+            
+            # signal
+            if score >= 80: signal = "🔥 STRONG BUY"
+            elif score >= 65: signal = "🟢 BUY"
+            elif score >= 45: signal = "🟡 WAIT"
+            else: signal = "🔴 AVOID"
+            
+            price = price_usd * (usd_to_idr if currency == "IDR" else 1)
+            
+            results.append({
+                "Coin": name,
+                "Symbol": symbol,
+                "Price": round(price, 4),
+                "24H %": round(change_24h, 2),
+                "7D %": 0.0,  # akan diisi nanti jika ada data
+                "Rank": rank,
+                "Volume (M)": round(volume_24h / 1_000_000, 1),
+                "Score": score,
+                "Signal": signal,
+                "asset_id": asset["id"]  # untuk ambil history
+            })
+        except Exception as e:
+            continue
+    return results
+
+# =========================================================
+# TAMBAHKAN VOLUME TREND (7-DAY AVG)
+# =========================================================
+def add_volume_trend(df):
+    """Tambahkan kolom Volume Trend berdasarkan data historis CoinCap"""
+    trend_data = {}
+    # Gunakan thread pool untuk mempercepat
     with ThreadPoolExecutor(max_workers=5) as executor:
-        future_to_symbol = {
-            executor.submit(get_volume_avg, symbol_to_id.get(sym)): sym
-            for sym in symbols if sym in symbol_to_id
-        }
+        future_to_symbol = {}
+        for _, row in df.iterrows():
+            asset_id = row.get("asset_id")
+            symbol = row["Symbol"]
+            if asset_id:
+                future = executor.submit(get_coincap_volume_history, asset_id)
+                future_to_symbol[future] = symbol
+        
         for future in as_completed(future_to_symbol):
-            sym = future_to_symbol[future]
+            symbol = future_to_symbol[future]
             try:
-                avg = future.result()
-                if avg is not None:
-                    volume_avgs[sym] = avg
+                volumes = future.result()
+                if volumes:
+                    avg_7d = sum(volumes) / len(volumes)
+                    trend_data[symbol] = avg_7d
             except:
                 pass
-            time.sleep(0.2)  # hindari rate limit
+            time.sleep(0.1)  # hindari rate limit
     
-    # Tambahkan kolom
+    # Tambahkan kolom ke dataframe
     def get_trend(row):
         sym = row["Symbol"]
-        current_vol = row["Volume (M)"] * 1_000_000  # Volume dalam USD
-        avg_vol = volume_avgs.get(sym)
-        if avg_vol is None or avg_vol == 0:
+        current_vol = row["Volume (M)"] * 1_000_000
+        avg = trend_data.get(sym)
+        if avg is None or avg == 0:
             return "➡️ N/A"
-        ratio = current_vol / avg_vol
+        ratio = current_vol / avg
         if ratio > 1.3:
-            return "🔼"  # Volume naik signifikan
+            return "🔼"
         elif ratio < 0.7:
-            return "🔽"  # Volume turun signifikan
+            return "🔽"
         else:
-            return "➡️"  # Stabil
+            return "➡️"
     
     df["Volume Trend"] = df.apply(get_trend, axis=1)
     return df
 
 # =========================================================
-# CALCULATE AI SCORE
+# MAIN
 # =========================================================
-def calculate_scores(coins, currency, usd_to_idr):
-    results = []
-    
-    for coin in coins:
-        try:
-            score = 0
-            
-            change_24h = coin.get("price_change_percentage_24h", 0) or 0
-            change_7d = coin.get("price_change_percentage_7d_in_currency", 0) or 0
-            marketcap_rank = coin.get("market_cap_rank", 999) or 999
-            volume = coin.get("total_volume", 0) or 0
-            market_cap = coin.get("market_cap", 0) or 0
-            ath = coin.get("ath", 1) or 1
-            current_price = coin.get("current_price", 0) or 0
-            
-            # --- 1. Momentum 24h ---
-            if change_24h > 10:
-                score += 50
-            elif change_24h > 5:
-                score += 35
-            elif change_24h > 2:
-                score += 20
-            elif change_24h > 0:
-                score += 10
-            
-            # --- 2. Momentum 7 hari ---
-            if change_7d > 20:
-                score += 20
-            elif change_7d > 10 and change_24h > change_7d * 0.3:
-                score += 15
-            
-            # --- 3. Market cap rank ---
-            if marketcap_rank <= 20:
-                score += 25
-            elif marketcap_rank <= 50:
-                score += 20
-            elif marketcap_rank <= 100:
-                score += 10
-            
-            # --- 4. Likuiditas (Volume/Market Cap) ---
-            if market_cap > 0:
-                volume_ratio = volume / market_cap
-                if volume_ratio > 0.1:
-                    score += 20
-                elif volume_ratio > 0.05:
-                    score += 10
-                if volume_ratio > 0.15:
-                    score += 5
-            
-            # --- 5. Distance to ATH ---
-            if current_price > 0 and ath > 0:
-                pct_to_ath = (current_price / ath) * 100
-                if pct_to_ath > 90:
-                    score += 15
-                elif pct_to_ath > 75:
-                    score += 8
-            
-            # --- Signal ---
-            if score >= 80:
-                signal = "🔥 STRONG BUY"
-            elif score >= 65:
-                signal = "🟢 BUY"
-            elif score >= 45:
-                signal = "🟡 WAIT"
-            else:
-                signal = "🔴 AVOID"
-            
-            price = current_price
-            if currency == "IDR":
-                price *= usd_to_idr
-            
-            results.append({
-                "Coin": coin["name"],
-                "Symbol": coin["symbol"].upper(),
-                "Price": round(price, 4),
-                "24H %": round(change_24h, 2),
-                "7D %": round(change_7d, 2),
-                "Rank": marketcap_rank,
-                "Volume (M)": round(volume / 1_000_000, 1),
-                "Score": score,
-                "Signal": signal
-            })
-            
-        except Exception as e:
-            continue
-    
-    return results
-
-# =========================================================
-# MAIN EXECUTION
-# =========================================================
-coins = load_coins()
-
-if coins is None:
-    st.warning("⚠️ Data tidak tersedia. Coba refresh halaman atau periksa koneksi internet.")
+assets = load_coincap_assets(limit=100)
+if assets is None:
+    st.warning("⚠️ Gagal mengambil data dari CoinCap. Coba refresh.")
     st.stop()
 
 # Proses data
-results = calculate_scores(coins, currency, usd_to_idr)
-
+results = process_coincap_data(assets, currency, usd_to_idr)
 if not results:
     st.error("Tidak ada data yang bisa diproses")
     st.stop()
@@ -473,9 +357,9 @@ if not results:
 df = pd.DataFrame(results)
 df = df.sort_values("Score", ascending=False)
 
-# --- Tambahkan Volume Trend ---
-with st.spinner("📊 Mengambil data volume historis untuk analisis trend..."):
-    df = add_volume_trend(df, coins)
+# Tambahkan volume trend
+with st.spinner("📊 Mengambil data volume historis 7 hari..."):
+    df = add_volume_trend(df)
 
 # Update waktu
 st.session_state.last_update_time = datetime.now()
@@ -484,244 +368,132 @@ st.session_state.last_update_time = datetime.now()
 # TELEGRAM NOTIFICATION
 # =========================================================
 if BOT_TOKEN and CHAT_ID and send_notifications:
-    new_signals = df[
-        (df["Signal"].isin(["🟢 BUY", "🔥 STRONG BUY"])) &
-        (df["Score"] >= notify_min_score)
-    ]
-    
-    notified_count = 0
-    failed_count = 0
-    
+    new_signals = df[(df["Signal"].isin(["🟢 BUY", "🔥 STRONG BUY"])) & (df["Score"] >= notify_min_score)]
+    notified = 0
+    failed = 0
     for _, row in new_signals.iterrows():
         symbol = row["Symbol"]
         signal = row["Signal"]
-        last_signal = st.session_state.last_notified.get(symbol)
-        
-        if last_signal != signal:
-            message = format_telegram_message(row)
-            success, msg = send_telegram(BOT_TOKEN, CHAT_ID, message)
-            if success:
+        if st.session_state.last_notified.get(symbol) != signal:
+            msg = format_telegram_message(row)
+            ok, _ = send_telegram(BOT_TOKEN, CHAT_ID, msg)
+            if ok:
                 st.session_state.last_notified[symbol] = signal
-                notified_count += 1
+                notified += 1
             else:
-                failed_count += 1
+                failed += 1
             time.sleep(0.3)
-    
-    if notified_count > 0:
-        st.sidebar.success(f"✅ {notified_count} notifikasi terkirim!")
-    if failed_count > 0:
-        st.sidebar.error(f"❌ {failed_count} notifikasi gagal!")
-
-# =========================================================
-# MARKET MOOD
-# =========================================================
-avg_score = df["Score"].mean()
-if avg_score >= 65:
-    mood = "🟢 BULLISH"
-elif avg_score >= 45:
-    mood = "🟡 NEUTRAL"
-else:
-    mood = "🔴 BEARISH"
+    if notified: st.sidebar.success(f"✅ {notified} notifikasi terkirim!")
+    if failed: st.sidebar.error(f"❌ {failed} gagal!")
 
 # =========================================================
 # METRICS
 # =========================================================
+avg_score = df["Score"].mean()
+mood = "🟢 BULLISH" if avg_score >= 65 else "🟡 NEUTRAL" if avg_score >= 45 else "🔴 BEARISH"
 c1, c2, c3, c4, c5 = st.columns(5)
-
-with c1:
-    st.metric("📊 Market Mood", mood)
-with c2:
-    st.metric("🪙 Coins Scanned", len(df))
-with c3:
-    st.metric("📈 Average Score", round(avg_score, 1))
-with c4:
-    strong_count = len(df[df["Signal"] == "🔥 STRONG BUY"])
-    st.metric("🔥 Strong Buy", strong_count)
-with c5:
-    buy_count = len(df[df["Signal"] == "🟢 BUY"])
-    st.metric("🟢 Buy", buy_count)
+c1.metric("📊 Market Mood", mood)
+c2.metric("🪙 Coins Scanned", len(df))
+c3.metric("📈 Average Score", round(avg_score, 1))
+c4.metric("🔥 Strong Buy", len(df[df["Signal"] == "🔥 STRONG BUY"]))
+c5.metric("🟢 Buy", len(df[df["Signal"] == "🟢 BUY"]))
 
 # =========================================================
-# TOP 3 OPPORTUNITIES
+# TOP 3
 # =========================================================
 st.subheader("🔥 Top 3 Opportunities")
 top3 = df.head(3)
-
 cols_top = st.columns(3)
 for idx, (_, row) in enumerate(top3.iterrows()):
     with cols_top[idx]:
-        signal_class = "signal-strong-buy" if "STRONG" in row["Signal"] else "signal-buy"
-        volume_trend = row.get("Volume Trend", "➡️")
+        cls = "signal-strong-buy" if "STRONG" in row["Signal"] else "signal-buy"
         st.markdown(f"""
-        <div style="background: linear-gradient(145deg, #111827, #0b1220); 
-                    border: 1px solid #1e293b; 
-                    border-radius: 16px; 
-                    padding: 20px; 
-                    margin: 5px;">
-            <h3 style="color: #f1f5f9; margin: 0;">{row['Coin']} <span style="font-size: 14px; color: #94a3b8;">{row['Symbol']}</span></h3>
-            <div style="margin: 10px 0;">
-                <span class="{signal_class}">{row['Signal']}</span>
-                <span style="float: right; color: #f1f5f9; font-size: 20px; font-weight: 700;">{row['Score']}</span>
-            </div>
-            <div style="display: flex; gap: 20px; color: #94a3b8; font-size: 14px;">
-                <span>24h: <span style="color: {'#00ff88' if row['24H %'] > 0 else '#ff3b5c'}">{row['24H %']}%</span></span>
-                <span>7d: <span style="color: {'#00ff88' if row['7D %'] > 0 else '#ff3b5c'}">{row['7D %']}%</span></span>
+        <div style="background: linear-gradient(145deg, #111827, #0b1220); border:1px solid #1e293b; border-radius:16px; padding:20px; margin:5px;">
+            <h3 style="color:#f1f5f9; margin:0;">{row['Coin']} <span style="font-size:14px; color:#94a3b8;">{row['Symbol']}</span></h3>
+            <div style="margin:10px 0;"><span class="{cls}">{row['Signal']}</span>
+            <span style="float:right; color:#f1f5f9; font-size:20px; font-weight:700;">{row['Score']}</span></div>
+            <div style="display:flex; gap:20px; color:#94a3b8; font-size:14px;">
+                <span>24h: <span style="color:{'#00ff88' if row['24H %']>0 else '#ff3b5c'}">{row['24H %']}%</span></span>
                 <span>Rank: #{row['Rank']}</span>
             </div>
-            <div style="color: #94a3b8; font-size: 14px; margin-top: 8px;">
-                Price: ${row['Price']:,.4f} | Volume: {row['Volume (M)']}M {volume_trend}
+            <div style="color:#94a3b8; font-size:14px; margin-top:8px;">
+                Price: ${row['Price']:,.4f} | Volume: {row['Volume (M)']}M {row.get('Volume Trend', '')}
             </div>
         </div>
         """, unsafe_allow_html=True)
 
 # =========================================================
-# TABBED VIEW
+# TABEL
 # =========================================================
-tab1, tab2, tab3, tab4 = st.tabs([
-    "🚀 Breakout Watchlist",
-    "💎 Strong Buy",
-    "🟢 Buy",
-    "📊 Full Scanner"
-])
-
+tab1, tab2, tab3, tab4 = st.tabs(["🚀 Breakout Watchlist", "💎 Strong Buy", "🟢 Buy", "📊 Full Scanner"])
 with tab1:
     breakout = df[(df["24H %"] > 5) & (df["Score"] > 40)]
     if not breakout.empty:
-        st.dataframe(
-            breakout.head(20),
-            use_container_width=True,
-            hide_index=True,
-            column_config={
-                "Price": st.column_config.NumberColumn(format="$%.4f"),
-                "24H %": st.column_config.NumberColumn(format="%.2f%%"),
-                "7D %": st.column_config.NumberColumn(format="%.2f%%"),
-                "Score": st.column_config.NumberColumn(format="%.0f"),
-                "Volume Trend": st.column_config.TextColumn("Volume Trend"),
-            }
-        )
+        st.dataframe(breakout.head(20), use_container_width=True, hide_index=True,
+                     column_config={"Price": st.column_config.NumberColumn(format="$%.4f"),
+                                    "24H %": st.column_config.NumberColumn(format="%.2f%%"),
+                                    "Score": st.column_config.NumberColumn(format="%.0f")})
     else:
-        st.info("ℹ️ Tidak ada coin yang memenuhi kriteria breakout saat ini")
-
+        st.info("Tidak ada breakout")
 with tab2:
     strong = df[df["Signal"] == "🔥 STRONG BUY"]
     if not strong.empty:
-        st.dataframe(
-            strong,
-            use_container_width=True,
-            hide_index=True,
-            column_config={
-                "Price": st.column_config.NumberColumn(format="$%.4f"),
-                "24H %": st.column_config.NumberColumn(format="%.2f%%"),
-                "7D %": st.column_config.NumberColumn(format="%.2f%%"),
-                "Score": st.column_config.NumberColumn(format="%.0f"),
-                "Volume Trend": st.column_config.TextColumn("Volume Trend"),
-            }
-        )
+        st.dataframe(strong, use_container_width=True, hide_index=True,
+                     column_config={"Price": st.column_config.NumberColumn(format="$%.4f"),
+                                    "24H %": st.column_config.NumberColumn(format="%.2f%%"),
+                                    "Score": st.column_config.NumberColumn(format="%.0f")})
     else:
-        st.info("ℹ️ Tidak ada rekomendasi Strong Buy saat ini")
-
+        st.info("Tidak ada Strong Buy")
 with tab3:
     buy = df[df["Signal"] == "🟢 BUY"]
     if not buy.empty:
-        st.dataframe(
-            buy,
-            use_container_width=True,
-            hide_index=True,
-            column_config={
-                "Price": st.column_config.NumberColumn(format="$%.4f"),
-                "24H %": st.column_config.NumberColumn(format="%.2f%%"),
-                "7D %": st.column_config.NumberColumn(format="%.2f%%"),
-                "Score": st.column_config.NumberColumn(format="%.0f"),
-                "Volume Trend": st.column_config.TextColumn("Volume Trend"),
-            }
-        )
+        st.dataframe(buy, use_container_width=True, hide_index=True,
+                     column_config={"Price": st.column_config.NumberColumn(format="$%.4f"),
+                                    "24H %": st.column_config.NumberColumn(format="%.2f%%"),
+                                    "Score": st.column_config.NumberColumn(format="%.0f")})
     else:
-        st.info("ℹ️ Tidak ada rekomendasi Buy saat ini")
-
+        st.info("Tidak ada Buy")
 with tab4:
-    st.dataframe(
-        df,
-        use_container_width=True,
-        height=500,
-        hide_index=True,
-        column_config={
-            "Price": st.column_config.NumberColumn(format="$%.4f"),
-            "24H %": st.column_config.NumberColumn(format="%.2f%%"),
-            "7D %": st.column_config.NumberColumn(format="%.2f%%"),
-            "Score": st.column_config.NumberColumn(format="%.0f"),
-            "Volume Trend": st.column_config.TextColumn("Volume Trend"),
-        }
-    )
-    
-    # Download CSV
+    st.dataframe(df, use_container_width=True, height=500, hide_index=True,
+                 column_config={"Price": st.column_config.NumberColumn(format="$%.4f"),
+                                "24H %": st.column_config.NumberColumn(format="%.2f%%"),
+                                "Score": st.column_config.NumberColumn(format="%.0f")})
     csv = df.to_csv(index=False).encode('utf-8')
-    st.download_button(
-        "📥 Download CSV",
-        csv,
-        f"crypto_scanner_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
-        "text/csv",
-        use_container_width=True
-    )
+    st.download_button("📥 Download CSV", csv, f"crypto_scanner_{datetime.now().strftime('%Y%m%d_%H%M')}.csv", "text/csv")
 
 # =========================================================
-# AVOID (di bawah tabs)
+# AVOID
 # =========================================================
-with st.expander("⚠️ Avoid List (Click to expand)"):
+with st.expander("⚠️ Avoid List"):
     avoid = df[df["Signal"] == "🔴 AVOID"]
     if not avoid.empty:
-        st.dataframe(
-            avoid.head(30),
-            use_container_width=True,
-            hide_index=True
-        )
+        st.dataframe(avoid.head(30), use_container_width=True, hide_index=True)
     else:
-        st.info("ℹ️ Tidak ada coin yang perlu dihindari")
+        st.info("Tidak ada coin yang perlu dihindari")
 
 # =========================================================
 # COIN DETAIL
 # =========================================================
 st.divider()
 st.subheader("📈 Coin Detail")
-
-selected = st.selectbox(
-    "Select Coin",
-    df["Symbol"].tolist(),
-    index=df["Symbol"].tolist().index(st.session_state.selected_symbol)
-    if st.session_state.selected_symbol in df["Symbol"].values else 0,
-    key="coin_selector"
-)
-
+selected = st.selectbox("Select Coin", df["Symbol"].tolist(),
+                        index=df["Symbol"].tolist().index(st.session_state.selected_symbol) if st.session_state.selected_symbol in df["Symbol"].values else 0)
 st.session_state.selected_symbol = selected
-selected_row = df[df["Symbol"] == selected].iloc[0]
+row = df[df["Symbol"] == selected].iloc[0]
 
 col1, col2, col3, col4 = st.columns(4)
-
-with col1:
-    st.metric("🪙 Coin", selected_row["Coin"])
-    st.metric("💰 Price", f"{selected_row['Price']:,.4f} {currency}")
-    
-with col2:
-    st.metric("📈 24H Change", f"{selected_row['24H %']}%",
-              delta=f"{selected_row['24H %']}%",
-              delta_color="normal")
-    st.metric("📈 7D Change", f"{selected_row['7D %']}%",
-              delta=f"{selected_row['7D %']}%",
-              delta_color="normal")
-    
-with col3:
-    st.metric("🏆 Market Cap Rank", f"#{selected_row['Rank']}")
-    st.metric("🧠 AI Score", f"{selected_row['Score']}/100")
-    
-with col4:
-    st.metric("📡 Signal", selected_row["Signal"])
-    volume_trend = selected_row.get("Volume Trend", "➡️")
-    trend_text = "Naik" if volume_trend == "🔼" else "Turun" if volume_trend == "🔽" else "Stabil"
-    st.metric("📊 Volume Trend", f"{volume_trend} {trend_text}")
+col1.metric("🪙 Coin", row["Coin"])
+col1.metric("💰 Price", f"{row['Price']:,.4f} {currency}")
+col2.metric("📈 24H Change", f"{row['24H %']}%", delta=f"{row['24H %']}%", delta_color="normal")
+col3.metric("🏆 Rank", f"#{row['Rank']}")
+col3.metric("🧠 Score", f"{row['Score']}/100")
+col4.metric("📡 Signal", row["Signal"])
+col4.metric("📊 Volume Trend", f"{row.get('Volume Trend', '➡️')}")
 
 # =========================================================
 # AUTO REFRESH
 # =========================================================
-st_autorefresh(interval=600000, key="refresh")  # 10 menit
+st_autorefresh(interval=600000, key="refresh")
 
 # =========================================================
 # FOOTER
@@ -729,8 +501,5 @@ st_autorefresh(interval=600000, key="refresh")  # 10 menit
 st.divider()
 st.caption(
     f"🔄 Last updated: {st.session_state.last_update_time.strftime('%Y-%m-%d %H:%M:%S')} | "
-    f"Total Coins: {len(df)} | "
-    f"Telegram: {'✅ Aktif' if BOT_TOKEN and CHAT_ID else '❌ Tidak aktif'} | "
-    f"Currency: {currency} | "
-    f"Volume Trend: 🔼 Naik, 🔽 Turun, ➡️ Stabil"
+    f"Total: {len(df)} | Telegram: {'✅' if BOT_TOKEN and CHAT_ID else '❌'} | Currency: {currency}"
 )

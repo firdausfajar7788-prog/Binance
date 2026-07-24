@@ -11,7 +11,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 # PAGE CONFIG
 # =========================================================
 st.set_page_config(
-    page_title="AI Daily Crypto Scanner (Hybrid)",
+    page_title="Daily",
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -96,7 +96,7 @@ if "last_update_time" not in st.session_state:
 # =========================================================
 # HEADER
 # =========================================================
-st.title("🚀 AI Daily Crypto Scanner (CoinGecko + YFinance)")
+st.title("Daily")
 st.caption("Data dari CoinGecko + Volume Trend dari Yahoo Finance + Telegram Alerts")
 col_time, _ = st.columns([2, 3])
 with col_time:

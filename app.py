@@ -5,12 +5,13 @@ from streamlit_autorefresh import st_autorefresh
 from datetime import datetime
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from pybit.unified_trading import HTTP
 
 # =========================================================
 # PAGE CONFIG
 # =========================================================
 st.set_page_config(
-    page_title="Daily - Bybit Scanner",
+    page_title="Bybit Scanner - Crypto Signals",
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -95,8 +96,8 @@ if "last_update_time" not in st.session_state:
 # =========================================================
 # HEADER
 # =========================================================
-st.title("Daily - Bybit Scanner")
-st.caption("Data dari Bybit API Indonesia | Volume Trend + Signal Scanner")
+st.title("📊 Bybit Crypto Scanner")
+st.caption("Data real-time dari Bybit API + Volume Trend + Telegram Alerts")
 col_time, _ = st.columns([2, 3])
 with col_time:
     st.caption(f"🕐 Last updated: {st.session_state.last_update_time.strftime('%Y-%m-%d %H:%M:%S')}")
@@ -106,6 +107,14 @@ with col_time:
 # =========================================================
 with st.sidebar:
     st.header("⚙️ Settings")
+    
+    # Pilihan kategori trading
+    category = st.selectbox(
+        "📊 Trading Category",
+        ["spot", "linear", "inverse", "option"],
+        help="Spot = trading biasa, Linear = USDT Perpetual, Inverse = Coin-M Futures"
+    )
+    
     currency = st.selectbox("💱 Currency", ["USD", "IDR"])
     st.divider()
     
@@ -137,7 +146,7 @@ with st.sidebar:
     st.divider()
     
     st.subheader("📊 Status")
-    st.metric("Coins Scanned", "100")
+    st.metric("Coins Scanned", "~100")
     st.metric("Auto Refresh", "10 menit")
     st.divider()
     st.caption("📊 **Volume Trend Legend:**")
@@ -146,7 +155,7 @@ with st.sidebar:
     st.caption("➡️ Volume stabil (70-130%)")
 
 # =========================================================
-# FUNGSI KURS IDR
+# FUNGSI KURS IDR (Tetap pakai exchangerate-api)
 # =========================================================
 @st.cache_data(ttl=3600)
 def get_usd_to_idr():
@@ -164,7 +173,7 @@ if currency == "IDR":
     st.sidebar.info(f"💱 1 USD = {usd_to_idr:,.0f} IDR")
 
 # =========================================================
-# TELEGRAM FUNCTIONS
+# FUNGSI TELEGRAM
 # =========================================================
 def send_telegram(bot_token, chat_id, message):
     if not bot_token or not chat_id:
@@ -179,138 +188,181 @@ def send_telegram(bot_token, chat_id, message):
 def format_telegram_message(row):
     emoji = "🚀" if "STRONG" in row["Signal"] else "📈"
     return f"""
-{emoji} <b>BYBIT SIGNAL!</b>
+{emoji} <b>SIGNAL DETECTED!</b>
 
-<b>Coin:</b> {row['Coin']}
+<b>Coin:</b> {row['Coin']} ({row['Symbol']})
 <b>Signal:</b> {row['Signal']}
 <b>Score:</b> {row['Score']}/100
 <b>Price:</b> ${row['Price']:.4f}
 <b>24H:</b> {row['24H %']}%
 <b>7D:</b> {row['7D %']}%
 <b>Volume:</b> {row['Volume (M)']}M {row.get('Volume Trend', '')}
+<b>Rank:</b> #{row['Rank']}
 🕐 {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}
 """
 
 # =========================================================
-# BYBIT API - INDONESIA
+# 1. AMBIL DATA DARI BYBIT (TICKERS + INSTRUMENTS INFO)
 # =========================================================
-BYBIT_URL = "https://api.bybit.id"
-
-def bybit_request(endpoint, params=None):
-    """Kirim request ke Bybit API Indonesia"""
+@st.cache_data(ttl=300)
+def load_bybit_data(category="spot", limit=150):
+    """Ambil data ticker dari Bybit API"""
     try:
-        url = f"{BYBIT_URL}/v5/{endpoint}"
-        response = requests.get(url, params=params, timeout=10)
-        if response.status_code == 200:
-            return response.json()
+        # Inisialisasi session tanpa auth untuk public endpoint
+        session = HTTP()
+        
+        # Ambil daftar instrumen untuk mendapatkan semua simbol aktif
+        instruments = session.get_instruments_info(category=category, limit=limit)
+        if instruments.get("retCode") != 0:
+            st.error(f"Bybit API Error: {instruments.get('retMsg')}")
+            return None
+        
+        # Ambil data ticker (harga, volume, perubahan)
+        tickers = session.get_tickers(category=category)
+        if tickers.get("retCode") != 0:
+            st.error(f"Bybit API Error: {tickers.get('retMsg')}")
+            return None
+        
+        # Gabungkan data
+        inst_list = instruments["result"]["list"]
+        ticker_list = tickers["result"]["list"]
+        
+        # Buat mapping ticker berdasarkan symbol
+        ticker_map = {t["symbol"]: t for t in ticker_list}
+        
+        # Gabungkan data
+        combined_data = []
+        for inst in inst_list:
+            symbol = inst["symbol"]
+            ticker = ticker_map.get(symbol, {})
+            
+            # Filter: hanya yang aktif dan memiliki harga
+            if inst.get("status") != "Trading":
+                continue
+            if not ticker.get("lastPrice") or float(ticker["lastPrice"]) <= 0:
+                continue
+            
+            # Parse data
+            price = float(ticker.get("lastPrice", 0))
+            price_24h_pcnt = float(ticker.get("price24hPcnt", 0)) * 100  # Ubah ke persen
+            volume_24h = float(ticker.get("volume24h", 0))
+            
+            # Ambil data dari instrumen jika ada
+            rank = int(inst.get("rank", 999))
+            market_cap = float(inst.get("marketCap", 0)) if inst.get("marketCap") else 0
+            
+            combined_data.append({
+                "symbol": symbol,
+                "name": symbol.replace("USDT", "").replace("USD", "").replace("USDC", ""),
+                "price": price,
+                "change_24h": price_24h_pcnt,
+                "volume_24h": volume_24h,
+                "rank": rank,
+                "market_cap": market_cap,
+                "ticker": ticker
+            })
+        
+        return combined_data
+    except Exception as e:
+        st.error(f"Error loading Bybit data: {e}")
         return None
-    except:
-        return None
-
-@st.cache_data(ttl=300)
-def get_bybit_tickers(category="linear", limit=200):
-    """Ambil semua ticker dari Bybit"""
-    data = bybit_request("market/tickers", {"category": category})
-    if data and data.get("retCode") == 0:
-        return data["result"]["list"]
-    return None
-
-@st.cache_data(ttl=300)
-def get_bybit_klines(symbol, interval="1d", limit=7):
-    """Ambil kline harian untuk volume historis"""
-    data = bybit_request(
-        "market/kline",
-        {
-            "category": "linear",
-            "symbol": symbol,
-            "interval": interval,
-            "limit": limit
-        }
-    )
-    if data and data.get("retCode") == 0:
-        klines = data["result"]["list"]
-        df = pd.DataFrame(klines, columns=["Time", "Open", "High", "Low", "Close", "Volume", "Turnover"])
-        df["Volume"] = df["Volume"].astype(float)
-        return df
-    return None
 
 # =========================================================
-# PROSES DATA BYBIT
+# 2. AMBIL VOLUME HISTORIS 7 HARI DARI BYBIT KLINE
 # =========================================================
-def process_bybit_data(tickers, currency, usd_to_idr):
+@st.cache_data(ttl=300)
+def get_bybit_volume_avg(symbol, category="spot"):
+    """Ambil rata-rata volume 7 hari dari Bybit Kline API"""
+    try:
+        session = HTTP()
+        response = session.get_kline(
+            category=category,
+            symbol=symbol,
+            interval="D",
+            limit=7
+        )
+        if response.get("retCode") != 0:
+            return None
+        
+        klines = response["result"]["list"]
+        if not klines or len(klines) < 3:
+            return None
+        
+        # Kline format: [timestamp, open, high, low, close, volume, turnover]
+        volumes = [float(k[5]) for k in klines]
+        avg_volume = sum(volumes) / len(volumes)
+        return avg_volume
+    except Exception as e:
+        return None
+
+# =========================================================
+# 3. PROSES DATA GABUNGAN
+# =========================================================
+def process_combined_data(bybit_data, currency, usd_to_idr, category="spot"):
     results = []
     
-    for ticker in tickers:
+    # Ambil volume rata-rata 7 hari secara paralel
+    volume_avg_dict = {}
+    with ThreadPoolExecutor(max_workers=10) as executor:
+        future_to_symbol = {
+            executor.submit(get_bybit_volume_avg, item["symbol"], category): item["symbol"]
+            for item in bybit_data
+        }
+        for future in as_completed(future_to_symbol):
+            sym = future_to_symbol[future]
+            try:
+                avg = future.result()
+                if avg is not None:
+                    volume_avg_dict[sym] = avg
+            except:
+                pass
+            time.sleep(0.05)
+    
+    # Proses setiap coin
+    for item in bybit_data:
         try:
-            symbol = ticker["symbol"]
+            symbol = item["symbol"]
+            name = item["name"]
+            price_usd = item["price"]
+            volume_24h = item["volume_24h"]
+            change_24h = item["change_24h"]
+            rank = item["rank"]
+            market_cap = item["market_cap"]
             
-            # Hanya ambil USDT pair
-            if not symbol.endswith("USDT"):
-                continue
-            
-            # Skip yang tidak populer (volume rendah)
-            volume_24h = float(ticker.get("volume24h", 0) or 0)
-            if volume_24h < 500000:  # Minimal $500k volume
-                continue
-            
-            price = float(ticker.get("lastPrice", 0) or 0)
-            change_24h = float(ticker.get("price24hPcnt", 0) or 0) * 100
-            high_24h = float(ticker.get("highPrice24h", 0) or 0)
-            low_24h = float(ticker.get("lowPrice24h", 0) or 0)
-            turnover = float(ticker.get("turnover24h", 0) or 0)
-            
-            # Ambil volume 7 hari historis
-            df = get_bybit_klines(symbol, "1d", 7)
-            volume_avg_7d = None
-            if df is not None and not df.empty:
-                volumes = df["Volume"].tolist()
-                if len(volumes) >= 3:
-                    volume_avg_7d = sum(volumes) / len(volumes)
-            
-            # Hitung score
+            # Hitung score (diadaptasi untuk Bybit)
             score = 0
             
-            # 1. 24H Change (0-50)
-            if change_24h > 10:
-                score += 50
-            elif change_24h > 5:
-                score += 35
-            elif change_24h > 2:
-                score += 20
-            elif change_24h > 0:
-                score += 10
+            # Skor dari perubahan 24h
+            if change_24h > 10: score += 50
+            elif change_24h > 5: score += 35
+            elif change_24h > 2: score += 20
+            elif change_24h > 0: score += 10
             
-            # 2. Volume/Market Cap proxy (pakai turnover)
-            if turnover > 0 and volume_24h > 0:
-                vol_ratio = volume_24h / turnover if turnover > 0 else 0
-                if vol_ratio > 0.1:
-                    score += 20
-                elif vol_ratio > 0.05:
-                    score += 10
-                if vol_ratio > 0.15:
-                    score += 5
+            # Skor dari peringkat
+            if rank <= 20: score += 25
+            elif rank <= 50: score += 20
+            elif rank <= 100: score += 10
             
-            # 3. Price vs High/Low (momentum)
-            if high_24h > 0 and low_24h > 0:
-                range_pct = (high_24h - low_24h) / low_24h * 100
-                if range_pct > 10:
-                    score += 10
-                elif range_pct > 5:
-                    score += 5
+            # Skor dari rasio volume terhadap market cap
+            if market_cap > 0:
+                vol_ratio = volume_24h / market_cap
+                if vol_ratio > 0.1: score += 20
+                elif vol_ratio > 0.05: score += 10
+                if vol_ratio > 0.15: score += 5
             
             # Signal
-            if score >= 80:
-                signal = "🔥 STRONG BUY"
-            elif score >= 65:
-                signal = "🟢 BUY"
-            elif score >= 45:
-                signal = "🟡 WAIT"
-            else:
-                signal = "🔴 AVOID"
+            if score >= 80: signal = "🔥 STRONG BUY"
+            elif score >= 65: signal = "🟢 BUY"
+            elif score >= 45: signal = "🟡 WAIT"
+            else: signal = "🔴 AVOID"
             
-            # Volume trend
-            if volume_avg_7d and volume_avg_7d > 0:
-                ratio = volume_24h / volume_avg_7d
+            # Harga dalam mata uang pilihan
+            price = price_usd * (usd_to_idr if currency == "IDR" else 1)
+            
+            # Volume trend dari Bybit Kline
+            avg_volume_7d = volume_avg_dict.get(symbol)
+            if avg_volume_7d and avg_volume_7d > 0:
+                ratio = volume_24h / avg_volume_7d
                 if ratio > 1.3:
                     volume_trend = "🔼"
                 elif ratio < 0.7:
@@ -318,48 +370,39 @@ def process_bybit_data(tickers, currency, usd_to_idr):
                 else:
                     volume_trend = "➡️"
             else:
-                volume_trend = "➡️"
-            
-            # Price dalam currency
-            price_display = price * (usd_to_idr if currency == "IDR" else 1)
+                volume_trend = "➡️ N/A"
             
             results.append({
-                "Coin": symbol.replace("USDT", ""),
+                "Coin": name,
                 "Symbol": symbol,
-                "Price": round(price_display, 4),
+                "Price": round(price, 4),
                 "24H %": round(change_24h, 2),
-                "7D %": "N/A",  # Bybit tidak menyediakan 7D
-                "24H High": round(high_24h, 4),
-                "24H Low": round(low_24h, 4),
+                "Rank": rank,
                 "Volume (M)": round(volume_24h / 1_000_000, 1),
-                "Turnover (M)": round(turnover / 1_000_000, 1),
                 "Score": score,
                 "Signal": signal,
-                "Volume Trend": volume_trend,
-                "Vol 7D Avg": round(volume_avg_7d / 1_000_000, 1) if volume_avg_7d else "N/A"
+                "Volume Trend": volume_trend
             })
-            
         except Exception as e:
             continue
     
-    # Sort by score
-    results = sorted(results, key=lambda x: x["Score"], reverse=True)
     return results
 
 # =========================================================
-# MAIN
+# MAIN EXECUTION
 # =========================================================
-with st.spinner("📊 Mengambil data dari Bybit Indonesia..."):
-    tickers = get_bybit_tickers(limit=200)
-    
-    if tickers is None:
-        st.warning("⚠️ Gagal mengambil data dari Bybit. Coba refresh.")
-        st.stop()
-    
-    results = process_bybit_data(tickers, currency, usd_to_idr)
+with st.spinner(f"📊 Mengambil data dari Bybit ({category})..."):
+    bybit_data = load_bybit_data(category=category, limit=150)
+
+if bybit_data is None:
+    st.warning("⚠️ Gagal mengambil data dari Bybit. Coba refresh atau pilih kategori lain.")
+    st.stop()
+
+with st.spinner("📈 Memproses data dan menghitung sinyal..."):
+    results = process_combined_data(bybit_data, currency, usd_to_idr, category=category)
 
 if not results:
-    st.error("Tidak ada data yang bisa diproses")
+    st.error("Tidak ada data yang bisa diproses. Coba kategori lain.")
     st.stop()
 
 df = pd.DataFrame(results)
@@ -387,10 +430,8 @@ if BOT_TOKEN and CHAT_ID and send_notifications:
             else:
                 failed += 1
             time.sleep(0.3)
-    if notified:
-        st.sidebar.success(f"✅ {notified} notifikasi terkirim!")
-    if failed:
-        st.sidebar.error(f"❌ {failed} gagal!")
+    if notified: st.sidebar.success(f"✅ {notified} notifikasi terkirim!")
+    if failed: st.sidebar.error(f"❌ {failed} gagal!")
 
 # =========================================================
 # METRICS
@@ -420,6 +461,7 @@ for idx, (_, row) in enumerate(top3.iterrows()):
             <span style="float:right; color:#f1f5f9; font-size:20px; font-weight:700;">{row['Score']}</span></div>
             <div style="display:flex; gap:20px; color:#94a3b8; font-size:14px;">
                 <span>24h: <span style="color:{'#00ff88' if row['24H %']>0 else '#ff3b5c'}">{row['24H %']}%</span></span>
+                <span>Rank: #{row['Rank']}</span>
             </div>
             <div style="color:#94a3b8; font-size:14px; margin-top:8px;">
                 Price: ${row['Price']:,.4f} | Volume: {row['Volume (M)']}M {row.get('Volume Trend', '')}
@@ -431,7 +473,6 @@ for idx, (_, row) in enumerate(top3.iterrows()):
 # TABEL
 # =========================================================
 tab1, tab2, tab3, tab4 = st.tabs(["🚀 Breakout Watchlist", "💎 Strong Buy", "🟢 Buy", "📊 Full Scanner"])
-
 with tab1:
     breakout = df[(df["24H %"] > 5) & (df["Score"] > 40)]
     if not breakout.empty:
@@ -441,7 +482,6 @@ with tab1:
                                     "Score": st.column_config.NumberColumn(format="%.0f")})
     else:
         st.info("Tidak ada breakout")
-
 with tab2:
     strong = df[df["Signal"] == "🔥 STRONG BUY"]
     if not strong.empty:
@@ -451,7 +491,6 @@ with tab2:
                                     "Score": st.column_config.NumberColumn(format="%.0f")})
     else:
         st.info("Tidak ada Strong Buy")
-
 with tab3:
     buy = df[df["Signal"] == "🟢 BUY"]
     if not buy.empty:
@@ -461,7 +500,6 @@ with tab3:
                                     "Score": st.column_config.NumberColumn(format="%.0f")})
     else:
         st.info("Tidak ada Buy")
-
 with tab4:
     st.dataframe(df, use_container_width=True, height=500, hide_index=True,
                  column_config={"Price": st.column_config.NumberColumn(format="$%.4f"),
@@ -494,8 +532,7 @@ col1, col2, col3, col4 = st.columns(4)
 col1.metric("🪙 Coin", row["Coin"])
 col1.metric("💰 Price", f"{row['Price']:,.4f} {currency}")
 col2.metric("📈 24H Change", f"{row['24H %']}%", delta=f"{row['24H %']}%", delta_color="normal")
-col2.metric("📊 24H High", f"${row['24H High']:,.4f}")
-col3.metric("📉 24H Low", f"${row['24H Low']:,.4f}")
+col3.metric("🏆 Rank", f"#{row['Rank']}")
 col3.metric("🧠 Score", f"{row['Score']}/100")
 col4.metric("📡 Signal", row["Signal"])
 col4.metric("📊 Volume Trend", row.get("Volume Trend", "➡️"))
@@ -511,6 +548,6 @@ st_autorefresh(interval=600000, key="refresh")
 st.divider()
 st.caption(
     f"🔄 Last updated: {st.session_state.last_update_time.strftime('%Y-%m-%d %H:%M:%S')} | "
-    f"Total: {len(df)} | Sumber: Bybit API Indonesia | "
-    f"Telegram: {'✅' if BOT_TOKEN and CHAT_ID else '❌'} | Currency: {currency}"
+    f"Total: {len(df)} | Sumber: Bybit API | "
+    f"Telegram: {'✅' if BOT_TOKEN and CHAT_ID else '❌'} | Currency: {currency} | Category: {category}"
 )

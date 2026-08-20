@@ -1,10 +1,5 @@
-streamlit
-pandas
-numpy
-plotly
-requests
-streamlit-autorefresh
-yfinance
-gspread
-oauth2client
-pybit
+streamlit==1.36.0
+pandas==2.2.2
+requests==2.32.3
+pybit==5.16.0
+streamlit-autorefresh==1.0.1

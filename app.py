@@ -9,6 +9,7 @@ from datetime import datetime
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import json
+import random
 
 # =========================================================
 # PAGE CONFIG
@@ -106,9 +107,14 @@ with col_time:
     st.caption(f"🕐 Last updated: {st.session_state.last_update_time.strftime('%Y-%m-%d %H:%M:%S')}")
 
 # =========================================================
-# BASE URL DAN HEADERS UNTUK INDONESIA
+# ENDPOINTS DAN HEADERS
 # =========================================================
-BYBIT_URL = "https://api.bybit.id"
+ENDPOINTS = [
+    "https://api.bybit.com",
+    "https://api-id.bybit.com",
+    "https://api-demo.bybit.com",
+    "https://api-testnet.bybit.com"
+]
 
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
@@ -117,70 +123,69 @@ HEADERS = {
     "Accept-Language": "id-ID,id;q=0.9,en-US;q=0.8,en;q=0.7",
     "Connection": "keep-alive",
     "Referer": "https://www.bybit.com/",
-    "Origin": "https://www.bybit.com"
+    "Origin": "https://www.bybit.com",
+    "Cache-Control": "no-cache",
+    "Pragma": "no-cache"
 }
 
 # =========================================================
-# FUNGSI AMBIL DATA DARI BYBIT
+# FUNGSI AMBIL DATA DENGAN MULTIPLE ENDPOINTS
 # =========================================================
-def fetch_bybit_data(endpoint, params=None, max_retries=3):
-    """Fungsi generic untuk fetch data dari Bybit dengan retry"""
-    for attempt in range(max_retries):
-        try:
-            session = requests.Session()
-            session.headers.update(HEADERS)
-            
-            response = session.get(
-                f"{BYBIT_URL}{endpoint}",
-                params=params,
-                timeout=15
-            )
-            
-            if response.status_code == 200:
-                try:
-                    data = response.json()
-                    if data.get("retCode") == 0:
-                        return data["result"]["list"] if "result" in data else data
-                    else:
-                        st.warning(f"Bybit API Error: {data.get('retMsg', 'Unknown error')}")
-                        return None
-                except json.JSONDecodeError as e:
-                    st.error(f"JSON Error: {e}")
-                    st.text(f"Response preview: {response.text[:200]}...")
-                    return None
-            else:
-                st.warning(f"HTTP Error {response.status_code}")
-                if attempt < max_retries - 1:
-                    time.sleep(2 ** attempt)
-                    continue
-                return None
+def fetch_bybit_data(endpoint_path, params=None, max_retries=2):
+    """Coba semua endpoint sampai berhasil"""
+    for endpoint in ENDPOINTS:
+        for attempt in range(max_retries):
+            try:
+                url = f"{endpoint}{endpoint_path}"
                 
-        except requests.exceptions.Timeout:
-            st.warning(f"Timeout attempt {attempt + 1}")
-            if attempt < max_retries - 1:
-                time.sleep(2 ** attempt)
+                # Tambahkan random delay untuk menghindari rate limit
+                time.sleep(random.uniform(0.5, 1.5))
+                
+                session = requests.Session()
+                session.headers.update(HEADERS)
+                
+                response = session.get(
+                    url,
+                    params=params,
+                    timeout=15
+                )
+                
+                if response.status_code == 200:
+                    try:
+                        data = response.json()
+                        if data.get("retCode") == 0:
+                            return data["result"]["list"] if "result" in data else data
+                    except json.JSONDecodeError:
+                        continue
+                elif response.status_code == 403:
+                    # Coba endpoint lain
+                    st.warning(f"⚠️ Endpoint {endpoint} ditolak (403), mencoba yang lain...")
+                    break  # Langsung ke endpoint berikutnya
+                else:
+                    if attempt < max_retries - 1:
+                        time.sleep(2 ** attempt)
+                        continue
+                        
+            except requests.exceptions.Timeout:
                 continue
-            return None
-        except requests.exceptions.ConnectionError:
-            st.warning(f"Connection error attempt {attempt + 1}")
-            if attempt < max_retries - 1:
-                time.sleep(2 ** attempt)
+            except requests.exceptions.ConnectionError:
                 continue
-            return None
-        except Exception as e:
-            st.error(f"Unexpected error: {e}")
-            return None
+            except Exception:
+                continue
     
     return None
 
+# =========================================================
+# AMBIL DATA DARI BYBIT
+# =========================================================
 @st.cache_data(ttl=300)
 def get_tickers(category="linear"):
-    """Ambil data ticker dari Bybit Indonesia"""
+    """Ambil data ticker dari Bybit dengan multiple endpoints"""
     return fetch_bybit_data("/v5/market/tickers", params={"category": category})
 
 @st.cache_data(ttl=300)
 def get_instruments_info(category="linear", limit=200):
-    """Ambil informasi instrumen dari Bybit Indonesia"""
+    """Ambil informasi instrumen dari Bybit"""
     return fetch_bybit_data(
         "/v5/market/instruments-info",
         params={"category": category, "limit": limit}
@@ -189,42 +194,36 @@ def get_instruments_info(category="linear", limit=200):
 @st.cache_data(ttl=300)
 def get_klines(symbol, interval="D", limit=7):
     """Ambil data candlestick historis"""
-    try:
-        response = requests.get(
-            f"{BYBIT_URL}/v5/market/kline",
-            params={
-                "category": "linear",
-                "symbol": symbol,
-                "interval": interval,
-                "limit": limit
-            },
-            headers=HEADERS,
-            timeout=10
-        )
-        if response.status_code == 200:
-            data = response.json()
-            if data.get("retCode") == 0:
-                klines = data["result"]["list"]
-                df = pd.DataFrame(klines, columns=["Time", "Open", "High", "Low", "Close", "Volume", "Turnover"])
-                df["Time"] = pd.to_datetime(df["Time"].astype(int), unit='ms')
-                df[["Open", "High", "Low", "Close", "Volume"]] = df[["Open", "High", "Low", "Close", "Volume"]].astype(float)
-                return df
-        return None
-    except Exception as e:
-        return None
-
-def get_volume_avg_7d(symbol):
-    """Ambil rata-rata volume 7 hari"""
-    df = get_klines(symbol, interval="D", limit=7)
-    if df is not None and len(df) >= 3:
-        return df["Volume"].mean()
+    for endpoint in ENDPOINTS:
+        try:
+            response = requests.get(
+                f"{endpoint}/v5/market/kline",
+                params={
+                    "category": "linear",
+                    "symbol": symbol,
+                    "interval": interval,
+                    "limit": limit
+                },
+                headers=HEADERS,
+                timeout=10
+            )
+            if response.status_code == 200:
+                data = response.json()
+                if data.get("retCode") == 0:
+                    klines = data["result"]["list"]
+                    df = pd.DataFrame(klines, columns=["Time", "Open", "High", "Low", "Close", "Volume", "Turnover"])
+                    df["Time"] = pd.to_datetime(df["Time"].astype(int), unit='ms')
+                    df[["Open", "High", "Low", "Close", "Volume"]] = df[["Open", "High", "Low", "Close", "Volume"]].astype(float)
+                    return df
+        except:
+            continue
     return None
 
 # =========================================================
-# FALLBACK: DATA DUMMY UNTUK TESTING
+# DATA DUMMY UNTUK FALLBACK
 # =========================================================
 def get_dummy_data():
-    """Data dummy untuk testing jika API gagal"""
+    """Data dummy untuk testing"""
     return [
         {"symbol": "BTCUSDT", "lastPrice": "60000", "price24hPcnt": "0.052", "volume24h": "1500000"},
         {"symbol": "ETHUSDT", "lastPrice": "3000", "price24hPcnt": "0.035", "volume24h": "800000"},
@@ -239,7 +238,7 @@ def get_dummy_data():
     ]
 
 def get_dummy_instruments():
-    """Data dummy instruments untuk testing"""
+    """Data dummy instruments"""
     return [
         {"symbol": "BTCUSDT", "rank": "1", "marketCap": "1200000000000"},
         {"symbol": "ETHUSDT", "rank": "2", "marketCap": "400000000000"},
@@ -400,6 +399,13 @@ def process_combined_data(tickers, instruments, currency, usd_to_idr):
     
     return results
 
+def get_volume_avg_7d(symbol):
+    """Ambil rata-rata volume 7 hari"""
+    df = get_klines(symbol, interval="D", limit=7)
+    if df is not None and len(df) >= 3:
+        return df["Volume"].mean()
+    return None
+
 # =========================================================
 # MAIN
 # =========================================================
@@ -460,10 +466,10 @@ if currency == "IDR":
 # =========================================================
 # AMBIL DATA DARI BYBIT
 # =========================================================
-with st.spinner(f"📊 Mengambil data dari Bybit Indonesia ({category})..."):
+with st.spinner(f"📊 Mengambil data dari Bybit ({category})..."):
     tickers = get_tickers(category=category)
     
-    # Jika gagal, coba fallback dengan data dummy
+    # Jika gagal, gunakan data dummy
     if tickers is None:
         st.warning("⚠️ Gagal mengambil data dari Bybit. Menggunakan data sample untuk testing...")
         tickers = get_dummy_data()

@@ -1,6 +1,9 @@
 streamlit
-pandas 
-numpy 
+pandas
+numpy
 plotly
 requests
 streamlit-autorefresh
+yfinance
+gspread
+oauth2client 

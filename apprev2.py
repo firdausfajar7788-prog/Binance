@@ -13,7 +13,7 @@ import time
 # CONFIG
 # =========================================================
 st.set_page_config(
-    page_title="~",
+    page_title="Crypto Scanner Pro V3",
     page_icon="🚀",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -208,7 +208,7 @@ def send_telegram(bot_token, chat_id, message):
 
 def format_telegram_message(row):
     return (
-        f"🚀 <b>~</b>\n\n"
+        f"🚀 <b>CRYPTO SCANNER SIGNAL</b>\n\n"
         f"<b>{row['Coin']} ({row['Symbol']})</b>\n"
         f"Signal: {row['Signal']}\n"
         f"Score: <b>{row['Score']}/100</b>\n\n"
@@ -271,7 +271,7 @@ def get_history(symbol, interval="1d"):
             )
         else:
             hist = ticker.history(
-                period="1y",
+                period="2y",
                 interval="1d",
                 auto_adjust=False
             )
@@ -286,7 +286,7 @@ def get_history(symbol, interval="1d"):
         hist = hist[hist["Volume"] > 0]
 
         # Minimal 60 candle untuk EMA200-ish / indikator stabil
-        if len(hist) < 60:
+        if len(hist) < (300 if interval == "1d" else 250):
             return None
 
         return hist
@@ -350,7 +350,7 @@ def add_indicators(df, breakout_lookback=20):
     x["ATR"] = tr.ewm(span=14, adjust=False).mean()
 
     # Relative volume (dengan guard)
-    x["VolumeAvg20"] = x["Volume"].rolling(20).mean()
+    x["VolumeAvg20"] = x["Volume"].shift(1).rolling(20).mean()
     x["RVOL"] = np.where(
         x["VolumeAvg20"] > 0,
         x["Volume"] / x["VolumeAvg20"],
@@ -360,13 +360,9 @@ def add_indicators(df, breakout_lookback=20):
     x["RVOL"] = np.clip(x["RVOL"], 0, 10)
 
     # Previous resistance/support
-    x["Resistance"] = x["High"].rolling(
-        breakout_lookback
-    ).max().shift(1)
+    x["Resistance"] = x["High"].shift(1).rolling(breakout_lookback).max()
 
-    x["Support"] = x["Low"].rolling(
-        breakout_lookback
-    ).min().shift(1)
+    x["Support"] = x["Low"].shift(1).rolling(breakout_lookback).min()
 
     # Momentum
     x["ROC7"] = x["Close"].pct_change(7) * 100
@@ -378,23 +374,26 @@ def add_indicators(df, breakout_lookback=20):
 # =========================================================
 # MARKET STRUCTURE
 # =========================================================
+def get_pivots(df, left=3, right=3):
+    h=df["High"]; l=df["Low"]
+    ph=(h==h.rolling(left+right+1,center=True).max()).fillna(False)
+    pl=(l==l.rolling(left+right+1,center=True).min()).fillna(False)
+    return ph, pl
+
 def get_structure(df):
-    if len(df) < 10:
-        return "N/A"
-
-    recent = df.tail(10)
-    first_half_high = recent["High"].iloc[:5].max()
-    second_half_high = recent["High"].iloc[5:].max()
-    first_half_low = recent["Low"].iloc[:5].min()
-    second_half_low = recent["Low"].iloc[5:].min()
-
-    if second_half_high > first_half_high and second_half_low > first_half_low:
-        return "HH/HL Bullish"
-
-    if second_half_high < first_half_high and second_half_low < first_half_low:
-        return "LH/LL Bearish"
-
+    if len(df)<30: return "N/A"
+    ph,pl=get_pivots(df)
+    hs=df.loc[ph,"High"].tail(3).tolist(); ls=df.loc[pl,"Low"].tail(3).tolist()
+    if len(hs)<2 or len(ls)<2: return "Mixed"
+    if hs[-1]>hs[-2] and ls[-1]>ls[-2]: return "HH/HL Bullish"
+    if hs[-1]<hs[-2] and ls[-1]<ls[-2]: return "LH/LL Bearish"
     return "Mixed"
+
+def get_pivot_sr(df):
+    ph,pl=get_pivots(df); price=float(df["Close"].iloc[-1])
+    rs=sorted({float(v) for v in df.loc[ph,"High"] if v>price})
+    ss=sorted({float(v) for v in df.loc[pl,"Low"] if v<price},reverse=True)
+    return (ss[0] if ss else np.nan),(rs[0] if rs else np.nan)
 
 
 # =========================================================
@@ -529,6 +528,9 @@ def calculate_setup(row):
     elif structure == "LH/LL Bearish":
         score -= 5
 
+    # Penalize extreme short-term acceleration so already-pumped coins do not dominate.
+    if roc7 > 25: score -= 6
+    if rsi > 78: score -= 4
     # Normalize
     score = max(0, min(100, int(round(score))))
 
@@ -640,6 +642,7 @@ def analyze_coin(coin, interval, breakout_lookback):
     volume_24h = float(coin.get("total_volume", 0) or 0)
 
     structure = get_structure(data)
+    pivot_support, pivot_resistance = get_pivot_sr(data)
 
     # Validasi RSI
     rsi_val = float(latest["RSI"]) if pd.notna(latest["RSI"]) else 50.0
@@ -649,7 +652,8 @@ def analyze_coin(coin, interval, breakout_lookback):
     row = {
         "Coin": coin["name"],
         "Symbol": symbol,
-        "Price USD": price_usd,
+        "Price USD": float(latest["Close"]),
+        "Live Price USD": price_usd,
         "24H %": change_24h,
         "7D %": change_7d,
         "Rank": rank,
@@ -665,8 +669,10 @@ def analyze_coin(coin, interval, breakout_lookback):
         "MACD Hist": float(latest["MACD_Hist"]),
         "ATR": float(latest["ATR"]) if pd.notna(latest["ATR"]) else price_usd * 0.02,
         "RVOL": float(latest["RVOL"]) if pd.notna(latest["RVOL"]) else 1.0,
-        "Resistance": float(latest["Resistance"]) if pd.notna(latest["Resistance"]) else price_usd,
-        "Support": float(latest["Support"]) if pd.notna(latest["Support"]) else price_usd,
+        "EMA21 Slope": float(latest["EMA21"].__float__() and data["EMA21"].pct_change(5).iloc[-1]) if pd.notna(data["EMA21"].pct_change(5).iloc[-1]) else 0.0,
+        "EMA50 Slope": float(data["EMA50"].pct_change(10).iloc[-1]) if pd.notna(data["EMA50"].pct_change(10).iloc[-1]) else 0.0,
+        "Resistance": float(pivot_resistance) if pd.notna(pivot_resistance) else (float(latest["Resistance"]) if pd.notna(latest["Resistance"]) else float(latest["Close"])),
+        "Support": float(pivot_support) if pd.notna(pivot_support) else (float(latest["Support"]) if pd.notna(latest["Support"]) else float(latest["Close"])),
         "ROC7": float(latest["ROC7"]) if pd.notna(latest["ROC7"]) else change_7d,
         "ROC20": float(latest["ROC20"]) if pd.notna(latest["ROC20"]) else change_7d,
         "Structure": structure,
@@ -683,11 +689,31 @@ def analyze_coin(coin, interval, breakout_lookback):
 
 
 # =========================================================
+# HISTORICAL BACKTEST
+# =========================================================
+def backtest_coin(history, lookback=20, horizon=5, target_pct=5.0, stop_pct=3.0, min_score=65):
+    if history is None or len(history)<350: return pd.DataFrame(), {}
+    x=add_indicators(history,lookback); rows=[]
+    for i in range(max(250,lookback+30),len(x)-horizon-1):
+        w=x.iloc[:i+1]; r=w.iloc[-1]; price=float(r.Close)
+        ps,pr=get_pivot_sr(w); resistance=pr if pd.notna(pr) else float(r.Resistance); support=ps if pd.notna(ps) else float(r.Support)
+        row={"Price USD":price,"EMA9":float(r.EMA9),"EMA21":float(r.EMA21),"EMA50":float(r.EMA50),"EMA200":float(r.EMA200),"RSI":float(r.RSI) if pd.notna(r.RSI) else 50.0,"MACD":float(r.MACD),"MACD Signal":float(r.MACD_Signal),"MACD Hist":float(r.MACD_Hist),"ATR":float(r.ATR) if pd.notna(r.ATR) else price*.02,"RVOL":float(r.RVOL) if pd.notna(r.RVOL) else 1.0,"Resistance":resistance,"Support":support,"ROC7":float(r.ROC7) if pd.notna(r.ROC7) else 0,"ROC20":float(r.ROC20) if pd.notna(r.ROC20) else 0,"Structure":get_structure(w),"History":w}
+        setup=calculate_setup(row)
+        if setup["Score"]<min_score or "WAIT" in setup["Signal"] or setup["Signal"]=="🔴 AVOID": continue
+        f=x.iloc[i+1:i+1+horizon]; entry=float(x["Open"].iloc[i+1]); tp=entry*(1+target_pct/100); sl=entry*(1-stop_pct/100)
+        ht=bool((f.High>=tp).any()); hs=bool((f.Low<=sl).any()); outcome="AMBIGUOUS" if ht and hs else "WIN" if ht else "LOSS" if hs else ("WIN" if float(f.Close.iloc[-1])>entry else "LOSS")
+        rows.append({"Date":x.index[i],"Signal":setup["Signal"],"Score":setup["Score"],"Entry":entry,"Target":tp,"Stop":sl,"Max Gain %":(float(f.High.max())/entry-1)*100,"Max Drawdown %":(float(f.Low.min())/entry-1)*100,"Outcome":outcome})
+    bt=pd.DataFrame(rows)
+    if bt.empty:return bt,{}
+    valid=bt[bt.Outcome.isin(["WIN","LOSS"])]
+    return bt,{"signals":len(bt),"valid":len(valid),"wins":int((valid.Outcome=="WIN").sum()),"win_rate":float((valid.Outcome=="WIN").mean()*100) if len(valid) else 0.0,"avg_gain":float(bt["Max Gain %"].mean()),"avg_dd":float(bt["Max Drawdown %"].mean())}
+
+# =========================================================
 # HEADER
 # =========================================================
 st.markdown("""
 <h1 style="margin-bottom:0;">
-🚀<span style="color:#00ff88;">Pro V2</span>
+🚀 Crypto Scanner <span style="color:#00ff88;">Pro V3</span>
 </h1>
 <p style="color:#64748b;">
 CoinGecko market data + Yahoo Finance OHLCV + Trend + Momentum +
@@ -826,7 +852,8 @@ tab1, tab2, tab3, tab4, tab5 = st.tabs([
     "🚀 Strong",
     "🟢 Momentum",
     "📊 Full Scanner",
-    "📈 Chart"
+    "📈 Chart",
+    "🧪 Backtest"
 ])
 
 display_columns = [
@@ -906,7 +933,7 @@ with tab5:
 
     selected_row = df[df["Symbol"] == selected].iloc[0]
     history = selected_row["History"].copy()
-    fib = fibonacci_levels(history, 50)
+    fib = fibonacci_levels(history, 100)
 
     st.subheader(f"{selected_row['Coin']} ({selected})")
 
@@ -1007,6 +1034,21 @@ with tab5:
     else:
         st.write("Tidak ada alasan tambahan.")
 
+
+with tab6:
+    st.subheader("🧪 Historical Rule Backtest")
+    st.caption("Entry = open candle berikutnya. Target/stop diuji selama horizon candle. Ini validasi rule, bukan jaminan profit.")
+    b1,b2,b3,b4=st.columns(4)
+    bt_h=b1.slider("Horizon",3,20,5); bt_t=b2.slider("Target %",2.0,15.0,5.0,0.5); bt_s=b3.slider("Stop %",1.0,10.0,3.0,0.5); bt_min=b4.slider("Min Score",50,85,65)
+    if st.button("▶️ Run Backtest",use_container_width=True):
+        with st.spinner("Running walk-forward backtest..."):
+            bt,stats=backtest_coin(history,lookback,bt_h,bt_t,bt_s,bt_min)
+        if bt.empty: st.warning("Sample belum cukup atau tidak ada sinyal dengan parameter ini.")
+        else:
+            q1,q2,q3,q4=st.columns(4); q1.metric("Signals",stats["signals"]); q2.metric("Valid",stats["valid"]); q3.metric("Win Rate",f"{stats['win_rate']:.1f}%"); q4.metric("Avg Max Gain",f"{stats['avg_gain']:.2f}%")
+            st.dataframe(bt.sort_values("Date",ascending=False),use_container_width=True,hide_index=True)
+            if stats["valid"]<20: st.warning("Sample masih kecil; jangan gunakan win rate ini sebagai dasar trading.")
+
 # =========================================================
 # EXPORT
 # =========================================================
@@ -1024,7 +1066,7 @@ csv = export_df.to_csv(index=False).encode("utf-8")
 st.download_button(
     "📥 Download CSV",
     csv,
-    f"crypto_scanner_v2_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
+    f"crypto_scanner_v3_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
     "text/csv"
 )
 

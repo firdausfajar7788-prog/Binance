@@ -13,7 +13,7 @@ import time
 # CONFIG
 # =========================================================
 st.set_page_config(
-    page_title="Crypto Scanner Pro V2",
+    page_title="~",
     page_icon="🚀",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -83,12 +83,26 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 # =========================================================
+# CONSTANTS
+# =========================================================
+SKIP_SYMBOLS = {
+    # Stablecoins
+    "USDT","USDC","DAI","USDE","FDUSD","USDS","TUSD","USDD","PYUSD","GUSD",
+    "BUSD","USDP","FRAX","LUSD","USD1","EURC","EURT","USDT0",
+    # Wrapped / staked
+    "WBTC","WETH","WSTETH","STETH","WBT","WBETH","RETH","CBETH","WEETH",
+    "CBBTC","SOLVBTC","LBTC","WBNB","WMATIC","WAVAX",
+}
+
+# =========================================================
 # SESSION STATE
 # =========================================================
 if "selected_symbol" not in st.session_state:
     st.session_state.selected_symbol = "BTC"
 if "last_notified" not in st.session_state:
     st.session_state.last_notified = {}
+if "last_notified_time" not in st.session_state:
+    st.session_state.last_notified_time = {}
 if "last_update_time" not in st.session_state:
     st.session_state.last_update_time = datetime.now()
 
@@ -127,8 +141,8 @@ with st.sidebar:
     st.divider()
 
     st.subheader("📱 Telegram")
-    default_token = st.secrets.get("TELEGRAM_BOT_TOKEN", "")
-    default_chat = st.secrets.get("TELEGRAM_CHAT_ID", "")
+    default_token = st.secrets.get("TELEGRAM_BOT_TOKEN", "") if hasattr(st, "secrets") else ""
+    default_chat = st.secrets.get("TELEGRAM_CHAT_ID", "") if hasattr(st, "secrets") else ""
 
     BOT_TOKEN = st.text_input(
         "Bot Token",
@@ -176,7 +190,6 @@ usd_to_idr = get_usd_to_idr()
 def send_telegram(bot_token, chat_id, message):
     if not bot_token or not chat_id:
         return False
-
     try:
         url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
         r = requests.post(
@@ -195,7 +208,7 @@ def send_telegram(bot_token, chat_id, message):
 
 def format_telegram_message(row):
     return (
-        f"🚀 <b>CRYPTO SCANNER SIGNAL</b>\n\n"
+        f"🚀 <b>~</b>\n\n"
         f"<b>{row['Coin']} ({row['Symbol']})</b>\n"
         f"Signal: {row['Signal']}\n"
         f"Score: <b>{row['Score']}/100</b>\n\n"
@@ -220,7 +233,6 @@ def format_telegram_message(row):
 @st.cache_data(ttl=300, show_spinner=False)
 def load_coingecko(limit=100):
     url = "https://api.coingecko.com/api/v3/coins/markets"
-
     params = {
         "vs_currency": "usd",
         "order": "market_cap_desc",
@@ -229,14 +241,12 @@ def load_coingecko(limit=100):
         "sparkline": False,
         "price_change_percentage": "24h,7d"
     }
-
     try:
         r = requests.get(url, params=params, timeout=20)
         if r.ok:
             return r.json()
     except Exception:
         pass
-
     return []
 
 
@@ -271,6 +281,14 @@ def get_history(symbol, interval="1d"):
 
         hist = hist[["Open", "High", "Low", "Close", "Volume"]].copy()
         hist = hist.dropna()
+
+        # Buang baris tanpa volume (penyebab RVOL aneh: 20x, 15x)
+        hist = hist[hist["Volume"] > 0]
+
+        # Minimal 60 candle untuk EMA200-ish / indikator stabil
+        if len(hist) < 60:
+            return None
+
         return hist
 
     except Exception:
@@ -282,7 +300,6 @@ def get_history(symbol, interval="1d"):
 # =========================================================
 def calculate_rsi(close, period=14):
     delta = close.diff()
-
     gain = delta.clip(lower=0)
     loss = -delta.clip(upper=0)
 
@@ -300,7 +317,6 @@ def calculate_rsi(close, period=14):
 
     rs = avg_gain / avg_loss.replace(0, np.nan)
     rsi = 100 - (100 / (1 + rs))
-
     return rsi
 
 
@@ -333,12 +349,17 @@ def add_indicators(df, breakout_lookback=20):
 
     x["ATR"] = tr.ewm(span=14, adjust=False).mean()
 
-    # Relative volume
+    # Relative volume (dengan guard)
     x["VolumeAvg20"] = x["Volume"].rolling(20).mean()
-    x["RVOL"] = x["Volume"] / x["VolumeAvg20"]
+    x["RVOL"] = np.where(
+        x["VolumeAvg20"] > 0,
+        x["Volume"] / x["VolumeAvg20"],
+        1.0
+    )
+    # Cap supaya tidak absurd
+    x["RVOL"] = np.clip(x["RVOL"], 0, 10)
 
-    # Previous resistance/support.
-    # Shift(1) prevents the current candle from defining its own breakout level.
+    # Previous resistance/support
     x["Resistance"] = x["High"].rolling(
         breakout_lookback
     ).max().shift(1)
@@ -362,10 +383,8 @@ def get_structure(df):
         return "N/A"
 
     recent = df.tail(10)
-
     first_half_high = recent["High"].iloc[:5].max()
     second_half_high = recent["High"].iloc[5:].max()
-
     first_half_low = recent["Low"].iloc[:5].min()
     second_half_low = recent["Low"].iloc[5:].min()
 
@@ -383,10 +402,8 @@ def get_structure(df):
 # =========================================================
 def fibonacci_levels(df, window=50):
     recent = df.tail(window)
-
     swing_high = recent["High"].max()
     swing_low = recent["Low"].min()
-
     diff = swing_high - swing_low
 
     if diff <= 0:
@@ -422,9 +439,7 @@ def calculate_setup(row):
     roc7 = row["ROC7"]
     roc20 = row["ROC20"]
 
-    # -----------------------------------------------------
     # 1. TREND = 20 points
-    # -----------------------------------------------------
     if price > ema9 > ema21 > ema50:
         score += 12
         reasons.append("EMA bullish alignment")
@@ -438,9 +453,7 @@ def calculate_setup(row):
         score += 8
         reasons.append("Above EMA200")
 
-    # -----------------------------------------------------
     # 2. MOMENTUM = 20 points
-    # -----------------------------------------------------
     if roc7 > 10:
         score += 10
         reasons.append("Strong 7D momentum")
@@ -457,9 +470,7 @@ def calculate_setup(row):
     elif roc20 > 0:
         score += 3
 
-    # -----------------------------------------------------
     # 3. VOLUME = 20 points
-    # -----------------------------------------------------
     if rvol >= 3:
         score += 20
         reasons.append("Extreme volume")
@@ -472,31 +483,25 @@ def calculate_setup(row):
     elif rvol >= 1.2:
         score += 5
 
-    # -----------------------------------------------------
     # 4. BREAKOUT = 20 points
-    # -----------------------------------------------------
     breakout = False
     near_breakout = False
 
-    if pd.notna(resistance):
+    if pd.notna(resistance) and resistance > 0:
         if price > resistance:
             breakout = True
-
             if rvol >= 1.5:
                 score += 20
                 reasons.append("Confirmed breakout")
             else:
                 score += 12
                 reasons.append("Breakout without strong volume")
-
         elif price >= resistance * 0.98:
             near_breakout = True
             score += 10
             reasons.append("Near breakout")
 
-    # -----------------------------------------------------
     # 5. RSI + MACD = 10 points
-    # -----------------------------------------------------
     if pd.notna(rsi):
         if 50 <= rsi <= 68:
             score += 5
@@ -516,11 +521,8 @@ def calculate_setup(row):
     elif macd < macd_signal:
         score -= 2
 
-    # -----------------------------------------------------
     # 6. STRUCTURE = 10 points
-    # -----------------------------------------------------
     structure = row["Structure"]
-
     if structure == "HH/HL Bullish":
         score += 10
         reasons.append("Bullish market structure")
@@ -530,9 +532,7 @@ def calculate_setup(row):
     # Normalize
     score = max(0, min(100, int(round(score))))
 
-    # -----------------------------------------------------
     # TREND LABEL
-    # -----------------------------------------------------
     if price > ema9 > ema21 > ema50:
         trend = "🟢 Strong Bullish"
     elif price > ema21 > ema50:
@@ -542,12 +542,13 @@ def calculate_setup(row):
     else:
         trend = "🔴 Bearish"
 
-    # -----------------------------------------------------
-    # SIGNAL
-    # -----------------------------------------------------
+    # SIGNAL (urutan prioritas diperbaiki)
     if breakout and rvol >= 1.5 and score >= 80:
         signal = "🔥 STRONG BREAKOUT"
         badge = "signal-strong"
+    elif breakout and rvol >= 1.5:
+        signal = "🟢 BREAKOUT"
+        badge = "signal-buy"
     elif score >= 80:
         signal = "🔥 STRONG BUY"
         badge = "signal-strong"
@@ -564,19 +565,15 @@ def calculate_setup(row):
         signal = "🔴 AVOID"
         badge = "signal-avoid"
 
-    # -----------------------------------------------------
     # ENTRY / SL / TP
-    # -----------------------------------------------------
     atr = row["ATR"]
-
     if pd.isna(atr) or atr <= 0:
         atr = price * 0.02
 
-    # Prefer breakout entry when price is above resistance.
     if breakout and pd.notna(resistance):
         entry = resistance * 1.002
         stop_loss = resistance - atr * 1.2
-    elif pd.notna(ema21):
+    elif pd.notna(ema21) and ema21 > 0:
         entry = price
         stop_loss = min(price - atr * 1.2, ema21 * 0.985)
     else:
@@ -584,21 +581,17 @@ def calculate_setup(row):
         stop_loss = price - atr * 1.2
 
     risk = max(entry - stop_loss, price * 0.005)
-
     tp1 = entry + risk * 1.5
     tp2 = entry + risk * 2.5
     tp3 = entry + risk * 4.0
-
     rr = (tp2 - entry) / risk if risk > 0 else 0
 
-    # Do not call a setup attractive when upside is too close.
-    if pd.notna(resistance) and not breakout:
+    # Override: jangan rekomendasi BUY kalau upside ke resistance < 2%
+    if (not breakout) and pd.notna(resistance) and resistance > 0:
         upside = (resistance - price) / price * 100
-        if upside < 2 and signal in [
-            "🔥 STRONG BUY",
-            "🟢 MOMENTUM BUY",
-            "🟣 EARLY MOMENTUM"
-        ]:
+        if upside < 2 and signal in (
+            "🔥 STRONG BUY", "🟢 MOMENTUM BUY", "🟣 EARLY MOMENTUM"
+        ):
             signal = "🟡 WAIT RESISTANCE"
             badge = "signal-wait"
 
@@ -624,8 +617,7 @@ def calculate_setup(row):
 def analyze_coin(coin, interval, breakout_lookback):
     symbol = coin["symbol"].upper()
 
-    # Skip common stablecoins because momentum signals are generally unhelpful.
-    if symbol in {"USDT", "USDC", "DAI", "USDE", "FDUSD", "USDS"}:
+    if symbol in SKIP_SYMBOLS:
         return None
 
     hist = get_history(symbol, interval)
@@ -633,26 +625,26 @@ def analyze_coin(coin, interval, breakout_lookback):
     if hist is None or len(hist) < 60:
         return None
 
-    data = add_indicators(
-        hist,
-        breakout_lookback=breakout_lookback
-    )
-
+    data = add_indicators(hist, breakout_lookback=breakout_lookback)
     latest = data.iloc[-1]
 
     # CoinGecko metadata
     price_usd = float(coin.get("current_price", 0) or 0)
-    change_24h = float(
-        coin.get("price_change_percentage_24h", 0) or 0
-    )
-    change_7d = float(
-        coin.get("price_change_percentage_7d_in_currency", 0) or 0
-    )
+    if price_usd <= 0:
+        return None
+
+    change_24h = float(coin.get("price_change_percentage_24h", 0) or 0)
+    change_7d = float(coin.get("price_change_percentage_7d_in_currency", 0) or 0)
     rank = int(coin.get("market_cap_rank", 999) or 999)
     market_cap = float(coin.get("market_cap", 0) or 0)
     volume_24h = float(coin.get("total_volume", 0) or 0)
 
     structure = get_structure(data)
+
+    # Validasi RSI
+    rsi_val = float(latest["RSI"]) if pd.notna(latest["RSI"]) else 50.0
+    if not (0 <= rsi_val <= 100):
+        rsi_val = 50.0
 
     row = {
         "Coin": coin["name"],
@@ -667,11 +659,11 @@ def analyze_coin(coin, interval, breakout_lookback):
         "EMA21": float(latest["EMA21"]),
         "EMA50": float(latest["EMA50"]),
         "EMA200": float(latest["EMA200"]),
-        "RSI": float(latest["RSI"]) if pd.notna(latest["RSI"]) else 50.0,
+        "RSI": rsi_val,
         "MACD": float(latest["MACD"]),
         "MACD Signal": float(latest["MACD_Signal"]),
         "MACD Hist": float(latest["MACD_Hist"]),
-        "ATR": float(latest["ATR"]),
+        "ATR": float(latest["ATR"]) if pd.notna(latest["ATR"]) else price_usd * 0.02,
         "RVOL": float(latest["RVOL"]) if pd.notna(latest["RVOL"]) else 1.0,
         "Resistance": float(latest["Resistance"]) if pd.notna(latest["Resistance"]) else price_usd,
         "Support": float(latest["Support"]) if pd.notna(latest["Support"]) else price_usd,
@@ -695,7 +687,7 @@ def analyze_coin(coin, interval, breakout_lookback):
 # =========================================================
 st.markdown("""
 <h1 style="margin-bottom:0;">
-🚀 Crypto Scanner <span style="color:#00ff88;">Pro V2</span>
+🚀<span style="color:#00ff88;">Pro V2</span>
 </h1>
 <p style="color:#64748b;">
 CoinGecko market data + Yahoo Finance OHLCV + Trend + Momentum +
@@ -715,14 +707,10 @@ if not coins:
 with st.spinner(f"🔎 Menganalisis {len(coins)} coins..."):
     results = []
 
-    with ThreadPoolExecutor(max_workers=8) as executor:
+    # Turunkan max_workers untuk hindari rate-limit + race condition cache
+    with ThreadPoolExecutor(max_workers=4) as executor:
         futures = {
-            executor.submit(
-                analyze_coin,
-                coin,
-                interval,
-                lookback
-            ): coin
+            executor.submit(analyze_coin, coin, interval, lookback): coin
             for coin in coins
         }
 
@@ -742,11 +730,7 @@ if not results:
     st.stop()
 
 df = pd.DataFrame(results)
-df = df.sort_values(
-    ["Score", "RVOL"],
-    ascending=[False, False]
-).reset_index(drop=True)
-
+df = df.sort_values(["Score", "RVOL"], ascending=[False, False]).reset_index(drop=True)
 df["Scanner Rank"] = df.index + 1
 st.session_state.last_update_time = datetime.now()
 
@@ -754,18 +738,9 @@ st.session_state.last_update_time = datetime.now()
 # MARKET METRICS
 # =========================================================
 avg_score = df["Score"].mean()
-
-bullish_count = len(
-    df[df["Trend"].str.contains("Bullish", na=False)]
-)
-
-breakout_count = len(
-    df[df["Breakout"] == "🔥 YES"]
-)
-
-strong_count = len(
-    df[df["Signal"].str.contains("STRONG", na=False)]
-)
+bullish_count = len(df[df["Trend"].str.contains("Bullish", na=False)])
+breakout_count = len(df[df["Breakout"] == "🔥 YES"])
+strong_count = len(df[df["Signal"].str.contains("STRONG", na=False)])
 
 if avg_score >= 65:
     market_mood = "🟢 BULLISH"
@@ -775,7 +750,6 @@ else:
     market_mood = "🔴 BEARISH"
 
 c1, c2, c3, c4, c5 = st.columns(5)
-
 c1.metric("Market Mood", market_mood)
 c2.metric("Coins", len(df))
 c3.metric("Avg Score", f"{avg_score:.1f}")
@@ -783,99 +757,64 @@ c4.metric("Breakouts", breakout_count)
 c5.metric("Strong Signals", strong_count)
 
 # =========================================================
-# TELEGRAM ALERT
+# TELEGRAM ALERT (dengan cooldown 1 jam per simbol)
 # =========================================================
 if BOT_TOKEN and CHAT_ID and send_notifications:
     alerts = df[
         (df["Score"] >= notify_min_score) &
-        (
-            df["Signal"].isin([
-                "🔥 STRONG BREAKOUT",
-                "🔥 STRONG BUY",
-                "🟢 MOMENTUM BUY"
-            ])
-        )
+        (df["Signal"].isin([
+            "🔥 STRONG BREAKOUT",
+            "🔥 STRONG BUY",
+            "🟢 BREAKOUT",
+            "🟢 MOMENTUM BUY"
+        ]))
     ]
 
     sent = 0
+    now_ts = time.time()
 
     for _, row in alerts.iterrows():
         key = f"{row['Symbol']}_{row['Signal']}"
+        last_key = st.session_state.last_notified.get(row["Symbol"])
+        last_time = st.session_state.last_notified_time.get(row["Symbol"], 0)
 
-        if st.session_state.last_notified.get(row["Symbol"]) != key:
-            if send_telegram(
-                BOT_TOKEN,
-                CHAT_ID,
-                format_telegram_message(row)
-            ):
+        if last_key != key and (now_ts - last_time) > 3600:
+            if send_telegram(BOT_TOKEN, CHAT_ID, format_telegram_message(row)):
                 st.session_state.last_notified[row["Symbol"]] = key
+                st.session_state.last_notified_time[row["Symbol"]] = now_ts
                 sent += 1
-
             time.sleep(0.25)
 
     if sent:
         st.sidebar.success(f"📱 {sent} alert terkirim")
 
 # =========================================================
-# TOP OPPORTUNITIES
+# TOP OPPORTUNITIES  ← FIX UTAMA: HTML tanpa indentasi
 # =========================================================
 st.divider()
 st.subheader("🔥 Top Opportunities")
 
 top = df.head(5)
-
 cols = st.columns(min(5, len(top)))
 
 for i, (_, row) in enumerate(top.iterrows()):
     with cols[i]:
         badge = row["Badge"]
+        color_24h = "#00ff88" if row["24H %"] >= 0 else "#ff3b5c"
 
-        st.markdown(f"""
-        <div style="
-            background:linear-gradient(145deg,#111827,#0b1220);
-            border:1px solid #1e293b;
-            border-radius:16px;
-            padding:18px;
-            min-height:230px;
-        ">
-            <div style="font-size:20px;font-weight:800;">
-                {row['Coin']}
-            </div>
-            <div style="color:#64748b;">
-                {row['Symbol']} · Rank #{row['Rank']}
-            </div>
-
-            <div style="margin:12px 0;">
-                <span class="{badge}">
-                    {row['Signal']}
-                </span>
-            </div>
-
-            <div style="font-size:28px;font-weight:800;">
-                {row['Score']}
-                <span style="font-size:12px;color:#64748b;">/100</span>
-            </div>
-
-            <div style="margin-top:10px;color:#94a3b8;">
-                24H:
-                <span style="color:{'#00ff88' if row['24H %'] >= 0 else '#ff3b5c'};">
-                    {row['24H %']:.2f}%
-                </span>
-            </div>
-
-            <div style="color:#94a3b8;">
-                RSI: {row['RSI']:.1f}
-            </div>
-
-            <div style="color:#94a3b8;">
-                RVOL: {row['RVOL']:.2f}x
-            </div>
-
-            <div style="color:#94a3b8;">
-                Breakout: {row['Breakout']}
-            </div>
-        </div>
-        """, unsafe_allow_html=True)
+        html = f"""
+<div style="background:linear-gradient(145deg,#111827,#0b1220);border:1px solid #1e293b;border-radius:16px;padding:18px;min-height:240px;">
+<div style="font-size:20px;font-weight:800;">{row['Coin']}</div>
+<div style="color:#64748b;">{row['Symbol']} &middot; Rank #{row['Rank']}</div>
+<div style="margin:12px 0;"><span class="{badge}">{row['Signal']}</span></div>
+<div style="font-size:28px;font-weight:800;">{row['Score']}<span style="font-size:12px;color:#64748b;">/100</span></div>
+<div style="margin-top:10px;color:#94a3b8;">24H: <span style="color:{color_24h};">{row['24H %']:.2f}%</span></div>
+<div style="color:#94a3b8;">RSI: {row['RSI']:.1f}</div>
+<div style="color:#94a3b8;">RVOL: {row['RVOL']:.2f}x</div>
+<div style="color:#94a3b8;">Breakout: {row['Breakout']}</div>
+</div>
+"""
+        st.markdown(html, unsafe_allow_html=True)
 
 # =========================================================
 # FILTER TABS
@@ -891,47 +830,41 @@ tab1, tab2, tab3, tab4, tab5 = st.tabs([
 ])
 
 display_columns = [
-    "Scanner Rank",
-    "Coin",
-    "Symbol",
-    "Score",
-    "Signal",
-    "Trend",
-    "24H %",
-    "7D %",
-    "RSI",
-    "RVOL",
-    "Breakout",
-    "Structure",
-    "Resistance",
-    "Support",
-    "Risk/Reward"
+    "Scanner Rank", "Coin", "Symbol", "Score", "Signal", "Trend",
+    "24H %", "7D %", "RSI", "RVOL", "Breakout", "Structure",
+    "Resistance", "Support", "Risk/Reward"
 ]
+
 
 def show_table(data):
     if data.empty:
         st.info("Tidak ada setup saat ini.")
         return
 
-    available = [
-        c for c in display_columns
-        if c in data.columns
-    ]
+    available = [c for c in display_columns if c in data.columns]
+    view = data[available].copy()
 
     st.dataframe(
-        data[available],
+        view.style.format({
+            "Score": "{:.0f}",
+            "24H %": "{:+.2f}%",
+            "7D %": "{:+.2f}%",
+            "RSI": "{:.1f}",
+            "RVOL": "{:.2f}x",
+            "Resistance": "${:,.6f}",
+            "Support": "${:,.6f}",
+            "Risk/Reward": "1:{:.2f}",
+        }, na_rep="-"),
         use_container_width=True,
         hide_index=True,
         height=500
     )
 
+
 with tab1:
     breakout_df = df[
         (df["Breakout"] == "🔥 YES") |
-        (
-            (df["Breakout"] == "⚠️ NEAR") &
-            (df["RVOL"] >= min_volume_ratio)
-        )
+        ((df["Breakout"] == "⚠️ NEAR") & (df["RVOL"] >= min_volume_ratio))
     ]
     show_table(breakout_df)
 
@@ -947,6 +880,7 @@ with tab2:
 with tab3:
     momentum_df = df[
         df["Signal"].isin([
+            "🟢 BREAKOUT",
             "🟢 MOMENTUM BUY",
             "🟣 EARLY MOMENTUM"
         ])
@@ -963,73 +897,37 @@ with tab5:
     symbols = df["Symbol"].tolist()
 
     if st.session_state.selected_symbol in symbols:
-        default_index = symbols.index(
-            st.session_state.selected_symbol
-        )
+        default_index = symbols.index(st.session_state.selected_symbol)
     else:
         default_index = 0
 
-    selected = st.selectbox(
-        "Select Coin",
-        symbols,
-        index=default_index
-    )
-
+    selected = st.selectbox("Select Coin", symbols, index=default_index)
     st.session_state.selected_symbol = selected
 
-    selected_row = df[
-        df["Symbol"] == selected
-    ].iloc[0]
-
+    selected_row = df[df["Symbol"] == selected].iloc[0]
     history = selected_row["History"].copy()
     fib = fibonacci_levels(history, 50)
 
-    st.subheader(
-        f"{selected_row['Coin']} ({selected})"
-    )
+    st.subheader(f"{selected_row['Coin']} ({selected})")
 
     m1, m2, m3, m4, m5, m6 = st.columns(6)
-
-    m1.metric(
-        "Price",
-        f"${selected_row['Price USD']:,.6f}"
-    )
-    m2.metric(
-        "Score",
-        f"{selected_row['Score']}/100"
-    )
-    m3.metric(
-        "RSI",
-        f"{selected_row['RSI']:.1f}"
-    )
-    m4.metric(
-        "RVOL",
-        f"{selected_row['RVOL']:.2f}x"
-    )
-    m5.metric(
-        "Breakout",
-        selected_row["Breakout"]
-    )
-    m6.metric(
-        "R:R",
-        f"1:{selected_row['Risk/Reward']:.2f}"
-    )
+    m1.metric("Price", f"${selected_row['Price USD']:,.6f}")
+    m2.metric("Score", f"{selected_row['Score']}/100")
+    m3.metric("RSI", f"{selected_row['RSI']:.1f}")
+    m4.metric("RVOL", f"{selected_row['RVOL']:.2f}x")
+    m5.metric("Breakout", selected_row["Breakout"])
+    m6.metric("R:R", f"1:{selected_row['Risk/Reward']:.2f}")
 
     st.markdown(
-        f"""
-        **Signal:** {selected_row['Signal']}  
-        **Trend:** {selected_row['Trend']}  
-        **Structure:** {selected_row['Structure']}
-        """
+        f"**Signal:** {selected_row['Signal']}  \n"
+        f"**Trend:** {selected_row['Trend']}  \n"
+        f"**Structure:** {selected_row['Structure']}"
     )
 
-    # -----------------------------------------------------
     # PRICE CHART
-    # -----------------------------------------------------
     chart_df = history.tail(120)
 
     fig = go.Figure()
-
     fig.add_trace(
         go.Candlestick(
             x=chart_df.index,
@@ -1062,7 +960,6 @@ with tab5:
         line_dash="dash",
         annotation_text="Resistance"
     )
-
     fig.add_hline(
         y=selected_row["Support"],
         line_dash="dash",
@@ -1077,76 +974,33 @@ with tab5:
         plot_bgcolor="rgba(0,0,0,0)"
     )
 
-    st.plotly_chart(
-        fig,
-        use_container_width=True
-    )
+    st.plotly_chart(fig, use_container_width=True)
 
-    # -----------------------------------------------------
     # TRADE PLAN
-    # -----------------------------------------------------
     st.subheader("🎯 Trade Plan")
 
     p1, p2, p3, p4 = st.columns(4)
-
-    p1.metric(
-        "Entry",
-        f"${selected_row['Entry']:,.6f}"
-    )
-    p2.metric(
-        "Stop Loss",
-        f"${selected_row['Stop Loss']:,.6f}"
-    )
-    p3.metric(
-        "TP1",
-        f"${selected_row['TP1']:,.6f}"
-    )
-    p4.metric(
-        "TP2",
-        f"${selected_row['TP2']:,.6f}"
-    )
+    p1.metric("Entry", f"${selected_row['Entry']:,.6f}")
+    p2.metric("Stop Loss", f"${selected_row['Stop Loss']:,.6f}")
+    p3.metric("TP1", f"${selected_row['TP1']:,.6f}")
+    p4.metric("TP2", f"${selected_row['TP2']:,.6f}")
 
     p5, p6, p7 = st.columns(3)
+    p5.metric("TP3", f"${selected_row['TP3']:,.6f}")
+    p6.metric("Resistance", f"${selected_row['Resistance']:,.6f}")
+    p7.metric("Support", f"${selected_row['Support']:,.6f}")
 
-    p5.metric(
-        "TP3",
-        f"${selected_row['TP3']:,.6f}"
-    )
-    p6.metric(
-        "Resistance",
-        f"${selected_row['Resistance']:,.6f}"
-    )
-    p7.metric(
-        "Support",
-        f"${selected_row['Support']:,.6f}"
-    )
-
-    # -----------------------------------------------------
     # FIBONACCI
-    # -----------------------------------------------------
     st.subheader("📐 Fibonacci")
-
     if fib:
         fib_df = pd.DataFrame(
-            [
-                {"Level": k, "Price": v}
-                for k, v in fib.items()
-            ]
+            [{"Level": k, "Price": v} for k, v in fib.items()]
         )
+        st.dataframe(fib_df, use_container_width=True, hide_index=True)
 
-        st.dataframe(
-            fib_df,
-            use_container_width=True,
-            hide_index=True
-        )
-
-    # -----------------------------------------------------
     # REASONS
-    # -----------------------------------------------------
     st.subheader("🧠 Why this coin scored this way")
-
     reasons = selected_row["Reasons"]
-
     if reasons:
         for reason in reasons:
             st.write(f"• {reason}")
@@ -1163,12 +1017,9 @@ export_cols = [
     c for c in df.columns
     if c not in ["History", "Reasons", "Badge"]
 ]
-
 export_df = df[export_cols].copy()
 
-csv = export_df.to_csv(
-    index=False
-).encode("utf-8")
+csv = export_df.to_csv(index=False).encode("utf-8")
 
 st.download_button(
     "📥 Download CSV",
@@ -1188,8 +1039,5 @@ st.caption(
     f"Timeframe: {interval}"
 )
 
-# Auto refresh every 10 minutes
-st_autorefresh(
-    interval=600000,
-    key="scanner_refresh"
-)
+# Auto refresh setiap 10 menit
+st_autorefresh(interval=600000, key="scanner_refresh")
